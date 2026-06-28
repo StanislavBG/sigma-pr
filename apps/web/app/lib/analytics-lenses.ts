@@ -19,6 +19,12 @@ export const ANALYTICS_LENSES = [
     title: 'Конкуренция',
     desc: 'Къде има висок дял „една оферта“ и концентрация на доставчици.',
   },
+  {
+    href: '/overruns',
+    title: 'Раздуване',
+    desc: 'Кои договори, институции и сектори се раздуват най-много след сключване — и тенденцията във времето.',
+    hero: true,
+  },
 ] as const;
 
 export const ANALYTICS_NAV_PATHS = [

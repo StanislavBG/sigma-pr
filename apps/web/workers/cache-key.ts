@@ -1,6 +1,7 @@
 // Keep this allow-list in sync with query params consumed by apps/web/app/routes loaders.
 export const CACHE_QUERY_PARAMS = new Set([
   'authority',
+  'by', // /overruns sort dimension
   'bidder',
   'center',
   'count',

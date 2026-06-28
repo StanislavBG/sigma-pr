@@ -1,6 +1,12 @@
 import { Link } from 'react-router';
-import { getCompetitionSummary, getFlows, getRegionalSpending, getSpendingTrend } from '@sigma/db';
-import { count, money, pct } from '@sigma/shared';
+import {
+  getCompetitionSummary,
+  getFlows,
+  getRegionalSpending,
+  getSpendingTrend,
+  getTopOverruns,
+} from '@sigma/db';
+import { count, money, pct, signedPct } from '@sigma/shared';
 import type { ReactNode } from 'react';
 import type { Route } from './+types/analytics';
 import { Breadcrumbs } from '../components/Breadcrumbs';
@@ -19,7 +25,7 @@ export function meta({ matches }: Route.MetaArgs) {
     path: '/analytics',
     title: 'Анализи — СИГМА',
     description:
-      'Четири аналитични изгледа към обществените поръчки: потоци, карта, тренд и конкуренция.',
+      'Пет аналитични изгледа към обществените поръчки: раздуване на стойността, потоци, карта, тренд и конкуренция — всеки води обратно към конкретните договори.',
   });
 }
 
@@ -29,14 +35,20 @@ export function headers() {
 
 export async function loader({ context }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
-  const [flows, regional, trend, competition] = await Promise.all([
+  const [flows, regional, trend, competition, overruns] = await Promise.all([
     getFlows(db, { top: 3 }),
     getRegionalSpending(db, { funding: 'all' }),
     getSpendingTrend(db, { funding: 'all', granularity: 'year' }, { includeSectors: false }),
     getCompetitionSummary(db),
+    getTopOverruns(db, { by: 'absolute', limit: 3 }),
   ]);
 
   return {
+    overruns: {
+      totalOverrunEur: overruns.totalOverrunEur,
+      count: overruns.count,
+      top: overruns.rows.slice(0, 3),
+    },
     flows: flows.pairs.slice(0, 3),
     regions: regional.regions.filter((region) => region.valueEur > 0).slice(0, 3),
     allRegions: regional.regions,
@@ -64,8 +76,69 @@ function LensLink({ to, children }: { to: string; children: ReactNode }) {
   );
 }
 
+const overrunsLens = ANALYTICS_LENSES.find((lens) => 'hero' in lens && lens.hero);
+const gridLenses = ANALYTICS_LENSES.filter((lens) => !('hero' in lens && lens.hero));
+
+// Prominent hero tile for the „Раздуване" lens — larger than a lens card, leading to /overruns, in the
+// editorial design language (warm panel, accent rule, mono numerics). Wired to real corpus figures.
+function OverrunsHero({
+  totalOverrunEur,
+  count: overrunCount,
+  top,
+}: {
+  totalOverrunEur: number;
+  count: number;
+  top: { contractSlug: string; subject: string; deltaEur: number; pct: number }[];
+}) {
+  if (!overrunsLens) return null;
+  return (
+    <Link
+      to={overrunsLens.href}
+      className="overruns-hero"
+      aria-label={`${overrunsLens.title} — ${overrunsLens.desc}`}
+    >
+      <div className="overruns-hero-main">
+        <p className="kicker info overruns-hero-kicker">Анализ · Акцент</p>
+        <h3 className="overruns-hero-title">
+          Раздуване на <em>договорите</em>
+        </h3>
+        <p className="desc">{overrunsLens.desc}</p>
+        <dl className="overruns-hero-kpis">
+          <div>
+            <dd className="num">{money(totalOverrunEur)}</dd>
+            <dt>общо раздуване</dt>
+          </div>
+          <div>
+            <dd className="num">{count(overrunCount)}</dd>
+            <dt>раздути договора</dt>
+          </div>
+        </dl>
+        <p className="lens-link">
+          <span>Виж раздуването →</span>
+        </p>
+      </div>
+      <div className="overruns-hero-aside">
+        <p className="lens-preview-title">Най-силно раздути договори</p>
+        {top.length ? (
+          <ul className="lens-list">
+            {top.map((c) => (
+              <li key={c.contractSlug}>
+                <span className="lens-name">{c.subject}</span>
+                <span className="lens-value lens-value-accent">+{money(c.deltaEur)}</span>
+                <span className="lens-meta">{signedPct(c.pct)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted">Все още няма потвърдено раздуване в данните.</p>
+        )}
+      </div>
+    </Link>
+  );
+}
+
 export default function Analytics({ loaderData }: Route.ComponentProps) {
-  const { flows, regions, allRegions, regionTotal, trend, competition } = loaderData;
+  const { flows, regions, allRegions, regionTotal, trend, competition, overruns } = loaderData;
 
   return (
     <>
@@ -74,7 +147,7 @@ export default function Analytics({ loaderData }: Route.ComponentProps) {
         <PageHeader
           kicker="Анализи"
           title="Анализи"
-          lede="Четири начина да проследиш едни и същи обществени поръчки: като движение на пари, карта, времева линия и сигнал за слаба конкуренция."
+          lede="Пет начина да проследиш едни и същи обществени поръчки: раздуване на стойността след сключване, движение на парите, карта, времева линия и сигнал за слаба конкуренция."
         />
 
         <Section
@@ -82,8 +155,13 @@ export default function Analytics({ loaderData }: Route.ComponentProps) {
           title="Изгледи"
           hint="Всеки изглед отговаря на различен въпрос, но всички водят обратно към конкретните договори."
         >
+          <OverrunsHero
+            totalOverrunEur={overruns.totalOverrunEur}
+            count={overruns.count}
+            top={overruns.top}
+          />
           <div className="tiles analytics-lenses">
-            {ANALYTICS_LENSES.map((lens) => (
+            {gridLenses.map((lens) => (
               <article className="tile lens-card" key={lens.href}>
                 <p className="kicker info">Изглед</p>
                 <h3>
