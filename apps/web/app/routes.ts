@@ -7,6 +7,7 @@ export default [
   route('flows', 'routes/flows.tsx'),
   route('network', 'routes/network.tsx'),
   route('trends', 'routes/trends.tsx'),
+  route('trends.rss', 'routes/trends.rss.tsx'),
   route('map', 'routes/map.tsx'),
   route('competition', 'routes/competition.tsx'),
   route('analytics', 'routes/analytics.tsx'),
