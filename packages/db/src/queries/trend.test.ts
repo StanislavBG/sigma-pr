@@ -189,6 +189,19 @@ describe('getSpendingTrend', () => {
     expect(sectorYears).toContainEqual({ division: '45', year: '2023', valueEur: 2000 });
   });
 
+  it('guards the seasonality scan against year-only dates folding into a bogus quarter 0', async () => {
+    // A year-only signed_at (e.g. '2024') passes YEAR_KNOWN but has no month, so QUARTER_EXPR's
+    // substr is '' → CAST 0 → quarter 0, which would dilute the Q4 share. The quarters scan must
+    // require the month delimiter (position 5 = '-') so those rows are excluded.
+    const captured: string[] = [];
+    await getSpendingTrend(fakeDb(captured), {});
+    const seasonality = captured.find((s) => s.includes('AS quarter'))!;
+    expect(seasonality).toContain("substr(c.signed_at, 5, 1) = '-'");
+    // The plain series scan keeps year-only dates (they still carry a usable year), so it is NOT guarded.
+    const series = captured.find((s) => s.includes('GROUP BY period'))!;
+    expect(series).not.toContain("substr(c.signed_at, 5, 1) = '-'");
+  });
+
   it('does not run the seasonality / movers scans when includeSectors is false', async () => {
     const captured: string[] = [];
     const { quarters, sectorYears } = await getSpendingTrend(
