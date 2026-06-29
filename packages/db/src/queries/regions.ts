@@ -68,8 +68,6 @@ async function regionRows(db: D1Database, p: RegionalParams): Promise<RegionRow[
 export interface RegionHeadline {
   regionCount: number;
   sofiaShare: number;
-  sofiaEur: number;
-  totalEur: number;
 }
 
 export async function getRegionHeadline(db: D1Database): Promise<RegionHeadline> {
@@ -90,8 +88,6 @@ export async function getRegionHeadline(db: D1Database): Promise<RegionHeadline>
   return {
     regionCount: BG_REGIONS.length,
     sofiaShare: totalEur > 0 ? sofiaEur / totalEur : 0,
-    sofiaEur,
-    totalEur,
   };
 }
 
