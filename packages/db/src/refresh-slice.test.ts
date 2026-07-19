@@ -659,6 +659,159 @@ describe('refresh-slice EOP base derivation', () => {
     }
   });
 
+  it('flags annex_suspect from the EUR-normalized ratio even when the raw native ratio is under threshold (#248)', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-'));
+    const dbPath = resolve(dir, 'test.sqlite');
+    try {
+      readScript(dbPath, schemaPath);
+      readScript(dbPath, migration1Path);
+      readScript(dbPath, migration2Path);
+      readScript(dbPath, workStagingSchemaPath);
+      sqlite(
+        dbPath,
+        `INSERT INTO authorities (id, name, bulstat, type) VALUES ('auth:923456789', 'Authority Ccy', '923456789', 'public');
+         INSERT INTO bidders (id, name, bulstat, eik_normalized, eik_valid, kind) VALUES ('eik:977777771', 'Bidder Ccy', '977777771', '977777771', 1, 'company');
+         INSERT INTO tenders (id, source_id, title, authority_id, estimated_value, currency, procedure_type, status)
+           VALUES ('t:UNP-CCY', 'UNP-CCY', 'Ccy tender', 'auth:923456789', 1500000, 'BGN', 'open', 'awarded');
+         INSERT INTO contracts
+           (id, tender_id, bidder_id, amount, currency, signed_at, contract_number, signing_value,
+            current_value, annex_count, value_flag, amount_eur, signing_value_eur)
+           VALUES
+           ('c:e:ccystep', 't:UNP-CCY', 'eik:977777771', 2000000, 'BGN', '2026-06-02',
+            'CONTRACT-CCY', 2000000, NULL, 0, 'ok', 2000000 / 1.95583, 2000000 / 1.95583);
+         INSERT INTO raw_amendments
+           (source, dataset_year, dataset_variant, fetched_at, seq_no, document_number,
+            contract_number, contract_date, published_at, unp, authority_eik, authority_name,
+            procurement_subject, contract_kind, value_before, value_after, value_delta,
+            currency, description)
+         VALUES
+           ('eop:annexes:2026-06-02', 2026, 'eop', '2026-06-08T00:00:00Z', '1', 'AMD-CCY-1',
+            'CONTRACT-CCY', '2026-06-02', '2026-06-03', 'UNP-CCY', '923456789', 'Authority Ccy',
+            'Ccy tender', 'works', 2000000, 150000000, 148000000, 'EUR', 'Post-switch EUR annex');`,
+      );
+
+      readScript(dbPath, refreshSlicePath);
+      const row = sqliteJson<{
+        value_flag: string;
+        current_value: number;
+        current_value_currency: string;
+      }>(
+        dbPath,
+        `SELECT value_flag, current_value, current_value_currency FROM contracts WHERE id = 'c:e:ccystep'`,
+      )[0];
+      // Raw native ratio (150000000 / 2000000 = 75) is under the 100x threshold, but the
+      // EUR-normalized ratio (150000000 EUR / (2000000 BGN / 1.95583) ≈ 146.7x) is not.
+      expect(row?.current_value).toBe(150000000);
+      expect(row?.current_value_currency).toBe('EUR');
+      expect(row?.value_flag).toBe('annex_suspect');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('flags annex_suspect from a single-step amendment jump even when the aggregate ratio is under threshold (#248)', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-'));
+    const dbPath = resolve(dir, 'test.sqlite');
+    try {
+      readScript(dbPath, schemaPath);
+      readScript(dbPath, migration1Path);
+      readScript(dbPath, migration2Path);
+      readScript(dbPath, workStagingSchemaPath);
+      sqlite(
+        dbPath,
+        `INSERT INTO authorities (id, name, bulstat, type) VALUES ('auth:933456789', 'Authority Step', '933456789', 'public');
+         INSERT INTO bidders (id, name, bulstat, eik_normalized, eik_valid, kind) VALUES ('eik:977777772', 'Bidder Step', '977777772', '977777772', 1, 'company');
+         INSERT INTO tenders (id, source_id, title, authority_id, estimated_value, currency, procedure_type, status)
+           VALUES ('t:UNP-STEP', 'UNP-STEP', 'Step tender', 'auth:933456789', 1000000, 'BGN', 'open', 'awarded');
+         INSERT INTO contracts
+           (id, tender_id, bidder_id, amount, currency, signed_at, contract_number, signing_value,
+            current_value, annex_count, value_flag, amount_eur, signing_value_eur)
+           VALUES
+           ('c:e:stepjump', 't:UNP-STEP', 'eik:977777772', 1000000, 'BGN', '2026-06-02',
+            'CONTRACT-STEP', 1000000, NULL, 0, 'ok', 1000000 / 1.95583, 1000000 / 1.95583);
+         INSERT INTO raw_amendments
+           (source, dataset_year, dataset_variant, fetched_at, seq_no, document_number,
+            contract_number, contract_date, published_at, unp, authority_eik, authority_name,
+            procurement_subject, contract_kind, value_before, value_after, value_delta,
+            currency, description)
+         VALUES
+           ('eop:annexes:2026-06-02', 2026, 'eop', '2026-06-08T00:00:00Z', '1', 'AMD-STEP-1',
+            'CONTRACT-STEP', '2026-06-02', '2026-06-03', 'UNP-STEP', '933456789', 'Authority Step',
+            'Step tender', 'works', 1000000, 2000000, 1000000, 'BGN', 'Step 1: 2x'),
+           ('eop:annexes:2026-06-02', 2026, 'eop', '2026-06-08T00:00:00Z', '2', 'AMD-STEP-2',
+            'CONTRACT-STEP', '2026-06-02', '2026-06-04', 'UNP-STEP', '933456789', 'Authority Step',
+            'Step tender', 'works', 2000000, 4000000, 2000000, 'BGN', 'Step 2: 2x'),
+           ('eop:annexes:2026-06-02', 2026, 'eop', '2026-06-08T00:00:00Z', '3', 'AMD-STEP-3',
+            'CONTRACT-STEP', '2026-06-02', '2026-06-05', 'UNP-STEP', '933456789', 'Authority Step',
+            'Step tender', 'works', 4000000, 95000000, 91000000, 'BGN', 'Step 3: 23.75x single-step jump');`,
+      );
+
+      readScript(dbPath, refreshSlicePath);
+      const row = sqliteJson<{
+        value_flag: string;
+        current_value: number;
+      }>(
+        dbPath,
+        `SELECT value_flag, current_value FROM contracts WHERE id = 'c:e:stepjump'`,
+      )[0];
+      // Aggregate first-to-last ratio (95000000 / 1000000 = 95) is under the 100x threshold, but the
+      // single step from 4000000 -> 95000000 (23.75x) is well above the 20x per-step threshold.
+      expect(row?.current_value).toBe(95000000);
+      expect(row?.value_flag).toBe('annex_suspect');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not flag annex_suspect for normal, gradual amendment growth (#248)', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-'));
+    const dbPath = resolve(dir, 'test.sqlite');
+    try {
+      readScript(dbPath, schemaPath);
+      readScript(dbPath, migration1Path);
+      readScript(dbPath, migration2Path);
+      readScript(dbPath, workStagingSchemaPath);
+      sqlite(
+        dbPath,
+        `INSERT INTO authorities (id, name, bulstat, type) VALUES ('auth:943456789', 'Authority Gradual', '943456789', 'public');
+         INSERT INTO bidders (id, name, bulstat, eik_normalized, eik_valid, kind) VALUES ('eik:977777773', 'Bidder Gradual', '977777773', '977777773', 1, 'company');
+         INSERT INTO tenders (id, source_id, title, authority_id, estimated_value, currency, procedure_type, status)
+           VALUES ('t:UNP-GRADUAL', 'UNP-GRADUAL', 'Gradual tender', 'auth:943456789', 2000000, 'BGN', 'open', 'awarded');
+         INSERT INTO contracts
+           (id, tender_id, bidder_id, amount, currency, signed_at, contract_number, signing_value,
+            current_value, annex_count, value_flag, amount_eur, signing_value_eur)
+           VALUES
+           ('c:e:gradual', 't:UNP-GRADUAL', 'eik:977777773', 1000000, 'BGN', '2026-06-02',
+            'CONTRACT-GRADUAL', 1000000, NULL, 0, 'ok', 1000000 / 1.95583, 1000000 / 1.95583);
+         INSERT INTO raw_amendments
+           (source, dataset_year, dataset_variant, fetched_at, seq_no, document_number,
+            contract_number, contract_date, published_at, unp, authority_eik, authority_name,
+            procurement_subject, contract_kind, value_before, value_after, value_delta,
+            currency, description)
+         VALUES
+           ('eop:annexes:2026-06-02', 2026, 'eop', '2026-06-08T00:00:00Z', '1', 'AMD-GRADUAL-1',
+            'CONTRACT-GRADUAL', '2026-06-02', '2026-06-03', 'UNP-GRADUAL', '943456789', 'Authority Gradual',
+            'Gradual tender', 'works', 1000000, 1200000, 200000, 'BGN', 'Step 1: 1.2x'),
+           ('eop:annexes:2026-06-02', 2026, 'eop', '2026-06-08T00:00:00Z', '2', 'AMD-GRADUAL-2',
+            'CONTRACT-GRADUAL', '2026-06-02', '2026-06-04', 'UNP-GRADUAL', '943456789', 'Authority Gradual',
+            'Gradual tender', 'works', 1200000, 1400000, 200000, 'BGN', 'Step 2: 1.167x');`,
+      );
+
+      readScript(dbPath, refreshSlicePath);
+      const row = sqliteJson<{
+        value_flag: string;
+        current_value: number;
+      }>(
+        dbPath,
+        `SELECT value_flag, current_value FROM contracts WHERE id = 'c:e:gradual'`,
+      )[0];
+      expect(row?.current_value).toBe(1400000);
+      expect(row?.value_flag).toBe('ok');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('matches full normalize contract ids for the same staging rows', () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-'));
     const fullDb = resolve(dir, 'full.sqlite');

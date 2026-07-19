@@ -524,6 +524,48 @@ INSERT OR IGNORE INTO contracts
    bids_sme, bids_rejected, bids_non_eea,
    subcontractor_eik, subcontractor_name, subcontract_value,
    eauction, framework, accelerated, strategic)
+-- amendment_winner/amendment_step_suspect: mirrors normalize-raw.sql's amendment_winner CTE so a
+-- freshly-inserted contract's insert-time annex_suspect classification also compares like-for-like
+-- EUR (current_value can already be amendment-derived at insert time, in a currency independent of
+-- this row's own `currency`) and catches a single-step outlier jump (#245/#248).
+WITH amendment_dedup AS (
+  SELECT *,
+    'am:' || COALESCE(unp, '') || ':' || COALESCE(contract_number, '') || ':' ||
+      COALESCE(
+        NULLIF(document_number, ''),
+        NULLIF(correction_number, ''),
+        NULLIF(seq_no, ''),
+        'content:' || COALESCE(published_at, '') || ':' ||
+          COALESCE(CAST(value_before AS TEXT), '') || ':' ||
+          COALESCE(CAST(value_after AS TEXT), '') || ':' ||
+          COALESCE(CAST(value_delta AS TEXT), '') || ':' ||
+          COALESCE(currency, '') || ':' ||
+          COALESCE(description, '')
+      ) AS natural_key
+  FROM raw_amendments
+), amendment_rn AS (
+  SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY natural_key ORDER BY source DESC, id DESC) AS rn
+  FROM amendment_dedup
+), amendment_winner AS (
+  SELECT unp, contract_number, currency,
+    ROW_NUMBER() OVER (
+      PARTITION BY unp, contract_number
+      ORDER BY published_at DESC, natural_key DESC
+    ) AS win_rn
+  FROM amendment_rn
+  WHERE rn = 1 AND value_after IS NOT NULL
+), amendment_step_suspect AS (
+  -- Any SINGLE amendment step (value_before -> value_after on that row, same amendments.currency
+  -- so no cross-currency issue within one row) that jumps ≥20x — headroom below the smallest
+  -- confirmed-real single-step case (37x), well above normal indexation/scope-change increases.
+  SELECT DISTINCT unp, contract_number
+  FROM amendment_rn
+  WHERE rn = 1
+    AND value_before IS NOT NULL AND value_before > 0
+    AND value_after IS NOT NULL
+    AND value_after / value_before >= 20
+)
 SELECT
   'c:o:' || COALESCE(x.unp, '') || ':' || COALESCE(x.contract_number, '') || ':' ||
     COALESCE(NULLIF(x.lot_id, ''), '_') || ':' || x.bidder_key || ':' || x.contract_ordinal,
@@ -629,6 +671,9 @@ FROM (
             -- value_low is labelled-but-counted (see the amount_eur CASE). Keep in sync with
             -- normalize-raw.sql and the EOP block below.
             WHEN c.eff_eur > 2000000000 OR (c.proc_est_eur >= 1000 AND c.eff_eur > 200 * c.proc_est_eur) THEN 'value_suspect'
+            -- annex_suspect below compares EUR-normalized current_value/signing_value (each converted
+            -- independently — current_value may be amendment-derived in a different currency, #245/#248)
+            -- and separately flags any single amendment step whose own before/after ratio is ≥20x.
             -- value_low: zero/negative, OR a tiny signed value (< 1000 EUR) that is also < 5% of the
             -- estimate. The < 1000 EUR floor keeps large legitimate framework call-offs OUT.
             WHEN COALESCE(c.current_value, c.signing_value) <= 0 THEN 'value_low'
@@ -675,7 +720,7 @@ FROM (
                 )
             END
           ), 0) < 0.05 THEN 'value_low'
-            WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+            WHEN (c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value_eur_norm > 0 AND c.current_value_eur_norm >= 100 * c.signing_value_eur_norm))) OR c.has_suspect_step THEN 'annex_suspect'
             WHEN c.proc_est_eur > 0 AND c.eff_eur >= 10 * c.proc_est_eur THEN 'review'
             ELSE 'ok'
           END AS value_flag,
@@ -721,9 +766,40 @@ FROM (
                 LIMIT 1
               )
             END AS proc_est_eur,
-            t.estimated_value AS proc_est_native
+            t.estimated_value AS proc_est_native,
+            CASE
+              WHEN c.signing_value IS NULL THEN NULL
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+              ELSE c.signing_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = c.currency
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END AS signing_value_eur_norm,
+            CASE
+              WHEN c.current_value IS NULL THEN NULL
+              WHEN COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.current_value
+              WHEN COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.current_value / 1.95583
+              ELSE c.current_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''))
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END AS current_value_eur_norm,
+            (ass.contract_number IS NOT NULL) AS has_suspect_step
           FROM raw_contracts c
           LEFT JOIN tenders t ON t.id = 't:' || c.unp
+          LEFT JOIN amendment_winner aw ON aw.unp = c.unp AND aw.contract_number = c.contract_number AND aw.win_rn = 1
+          LEFT JOIN amendment_step_suspect ass ON ass.unp = c.unp AND ass.contract_number = c.contract_number
         ) c
         WHERE c.source LIKE 'ocds:%'
       ) z
@@ -774,6 +850,44 @@ INSERT OR IGNORE INTO contracts
    bids_sme, bids_rejected, bids_non_eea,
    subcontractor_eik, subcontractor_name, subcontract_value,
    eauction, framework, accelerated, strategic)
+-- amendment_winner/amendment_step_suspect: mirrors the OCDS block above (and normalize-raw.sql's
+-- amendment_winner) so this EOP insert-time annex_suspect classification also compares like-for-like
+-- EUR and catches a single-step outlier jump (#245/#248).
+WITH amendment_dedup AS (
+  SELECT *,
+    'am:' || COALESCE(unp, '') || ':' || COALESCE(contract_number, '') || ':' ||
+      COALESCE(
+        NULLIF(document_number, ''),
+        NULLIF(correction_number, ''),
+        NULLIF(seq_no, ''),
+        'content:' || COALESCE(published_at, '') || ':' ||
+          COALESCE(CAST(value_before AS TEXT), '') || ':' ||
+          COALESCE(CAST(value_after AS TEXT), '') || ':' ||
+          COALESCE(CAST(value_delta AS TEXT), '') || ':' ||
+          COALESCE(currency, '') || ':' ||
+          COALESCE(description, '')
+      ) AS natural_key
+  FROM raw_amendments
+), amendment_rn AS (
+  SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY natural_key ORDER BY source DESC, id DESC) AS rn
+  FROM amendment_dedup
+), amendment_winner AS (
+  SELECT unp, contract_number, currency,
+    ROW_NUMBER() OVER (
+      PARTITION BY unp, contract_number
+      ORDER BY published_at DESC, natural_key DESC
+    ) AS win_rn
+  FROM amendment_rn
+  WHERE rn = 1 AND value_after IS NOT NULL
+), amendment_step_suspect AS (
+  SELECT DISTINCT unp, contract_number
+  FROM amendment_rn
+  WHERE rn = 1
+    AND value_before IS NOT NULL AND value_before > 0
+    AND value_after IS NOT NULL
+    AND value_after / value_before >= 20
+)
 SELECT
   'c:e:' || COALESCE(x.unp, '') || ':' || COALESCE(x.contract_number, '') || ':' ||
     COALESCE(NULLIF(x.lot_norm, ''), '_') || ':' || x.bidder_key || ':' || x.contract_ordinal,
@@ -929,7 +1043,7 @@ FROM (
                 )
             END
           ), 0) < 0.05 THEN 'value_low'
-            WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+            WHEN (c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value_eur_norm > 0 AND c.current_value_eur_norm >= 100 * c.signing_value_eur_norm))) OR c.has_suspect_step THEN 'annex_suspect'
             WHEN c.proc_est_eur > 0 AND c.eff_eur >= 10 * c.proc_est_eur THEN 'review'
             ELSE 'ok'
           END AS value_flag,
@@ -975,9 +1089,40 @@ FROM (
                 LIMIT 1
               )
             END AS proc_est_eur,
-            t.estimated_value AS proc_est_native
+            t.estimated_value AS proc_est_native,
+            CASE
+              WHEN c.signing_value IS NULL THEN NULL
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+              ELSE c.signing_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = c.currency
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END AS signing_value_eur_norm,
+            CASE
+              WHEN c.current_value IS NULL THEN NULL
+              WHEN COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.current_value
+              WHEN COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.current_value / 1.95583
+              ELSE c.current_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''))
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END AS current_value_eur_norm,
+            (ass.contract_number IS NOT NULL) AS has_suspect_step
           FROM raw_contracts c
           LEFT JOIN tenders t ON t.id = 't:' || c.unp
+          LEFT JOIN amendment_winner aw ON aw.unp = c.unp AND aw.contract_number = c.contract_number AND aw.win_rn = 1
+          LEFT JOIN amendment_step_suspect ass ON ass.unp = c.unp AND ass.contract_number = c.contract_number
         ) c
         WHERE c.source LIKE 'eop:%'
           AND NOT EXISTS (
@@ -1114,6 +1259,37 @@ WITH contract_base AS (
       WHEN c.fx_rate IS NOT NULL THEN c.signing_value * c.fx_rate
       ELSE NULL
     END AS eff_eur,
+    -- annex_suspect must compare like-for-like EUR amounts, not raw native ones: current_value can be
+    -- denominated in a different currency than signing_value when the latest amendment was recorded
+    -- after the 2026 BGN->EUR feed switch (#245/#248). Each side is converted independently.
+    CASE
+      WHEN c.signing_value IS NULL THEN NULL
+      WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+      WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+      WHEN c.fx_rate IS NOT NULL THEN c.signing_value * c.fx_rate
+      ELSE NULL
+    END AS signing_value_eur_norm,
+    CASE
+      WHEN c.current_value IS NULL THEN NULL
+      WHEN COALESCE(NULLIF(c.current_value_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.current_value
+      WHEN COALESCE(NULLIF(c.current_value_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.current_value / 1.95583
+      WHEN c.fx_rate IS NOT NULL THEN c.current_value * c.fx_rate
+      ELSE NULL
+    END AS current_value_eur_norm,
+    -- Any SINGLE amendment step (that row's own value_before -> value_after, both in the same
+    -- amendments.currency so no cross-currency issue within one row) that jumps ≥20x flags the
+    -- contract regardless of what the aggregate first-to-last ratio says (#248) — 20x sits with
+    -- headroom below the smallest confirmed-real single-step case (37x) and well above normal
+    -- indexation/scope-change increases. Correlated EXISTS (not a full-table CTE) so it rides the
+    -- existing idx_amendments_contract(unp, contract_number) index and stays scoped to touched rows.
+    EXISTS (
+      SELECT 1 FROM amendments a
+      WHERE a.unp = substr(c.tender_id, 3)
+        AND a.contract_number = c.contract_number
+        AND a.value_before IS NOT NULL AND a.value_before > 0
+        AND a.value_after IS NOT NULL
+        AND a.value_after / a.value_before >= 20
+    ) AS has_suspect_step,
     CASE
       WHEN te.estimated_value IS NULL THEN NULL
       WHEN COALESCE(NULLIF(te.currency, ''), 'BGN') = 'EUR' THEN te.estimated_value
@@ -1164,10 +1340,10 @@ WITH contract_base AS (
   SELECT id, currency, signing_value, current_value, current_value_currency, fx_rate, proc_est_eur, proc_est_native,
     CASE
       WHEN c.value_flag <> 'annex_suspect'
-        AND NOT (c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)))
+        AND NOT (c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value_eur_norm > 0 AND c.current_value_eur_norm >= 100 * c.signing_value_eur_norm)) OR c.has_suspect_step)
       THEN c.value_flag
       WHEN c.eff_eur > 2000000000 OR (c.proc_est_eur >= 1000 AND c.eff_eur > 200 * c.proc_est_eur) THEN 'value_suspect'
-      WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+      WHEN (c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value_eur_norm > 0 AND c.current_value_eur_norm >= 100 * c.signing_value_eur_norm))) OR c.has_suspect_step THEN 'annex_suspect'
       WHEN c.proc_est_eur > 0 AND c.eff_eur >= 10 * c.proc_est_eur THEN 'review'
       ELSE 'ok'
     END AS new_value_flag

@@ -360,6 +360,18 @@ WITH amendment_dedup AS (
     ) AS win_rn
   FROM amendment_rn
   WHERE rn = 1 AND value_after IS NOT NULL
+), amendment_step_suspect AS (
+  -- Any SINGLE amendment step (that row's own value_before -> value_after, both in the same
+  -- amendments.currency so no cross-currency issue within one row) that jumps ≥20x flags the
+  -- contract regardless of what the aggregate first-to-last ratio says (#248) — 20x sits with
+  -- headroom below the smallest confirmed-real single-step case (37x) and well above normal
+  -- indexation/scope-change increases.
+  SELECT DISTINCT unp, contract_number
+  FROM amendment_rn
+  WHERE rn = 1
+    AND value_before IS NOT NULL AND value_before > 0
+    AND value_after IS NOT NULL
+    AND value_after / value_before >= 20
 )
 SELECT
   CASE
@@ -515,7 +527,7 @@ FROM (
               )
             END
           ), 0) < 0.05 THEN 'value_low'
-          WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+          WHEN (c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value_eur_norm > 0 AND c.current_value_eur_norm >= 100 * c.signing_value_eur_norm))) OR c.has_suspect_step THEN 'annex_suspect'
           WHEN c.proc_est_eur > 0 AND c.eff_eur >= 10 * c.proc_est_eur THEN 'review'
           ELSE 'ok'
         END AS value_flag,
@@ -562,11 +574,46 @@ FROM (
             )
           END AS proc_est_eur,
           t.estimated_value AS proc_est_native,
-          aw.currency AS amendment_currency
+          aw.currency AS amendment_currency,
+          -- annex_suspect must compare like-for-like EUR amounts, not raw native ones: current_value
+          -- can be denominated in a different currency than signing_value when the winning amendment
+          -- recorded one (see amendment_currency above / #245). Each side converted independently.
+          CASE
+            WHEN c.signing_value IS NULL THEN NULL
+            WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+            WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+            ELSE c.signing_value * (
+              SELECT f.eur_per_unit
+              FROM fx_rates f
+              WHERE f.base_currency = c.currency
+                AND f.rate_date <= c.contract_date
+                AND f.rate_date >= date(c.contract_date, '-10 days')
+              ORDER BY f.rate_date DESC
+              LIMIT 1
+            )
+          END AS signing_value_eur_norm,
+          CASE
+            WHEN c.current_value IS NULL THEN NULL
+            WHEN COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.current_value
+            WHEN COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.current_value / 1.95583
+            ELSE c.current_value * (
+              SELECT f.eur_per_unit
+              FROM fx_rates f
+              WHERE f.base_currency = COALESCE(NULLIF(aw.currency, ''), NULLIF(c.currency, ''))
+                AND f.rate_date <= c.contract_date
+                AND f.rate_date >= date(c.contract_date, '-10 days')
+              ORDER BY f.rate_date DESC
+              LIMIT 1
+            )
+          END AS current_value_eur_norm,
+          -- Per-step outlier check (#248): flags regardless of the aggregate first-to-last ratio.
+          (ass.contract_number IS NOT NULL) AS has_suspect_step
         FROM raw_contracts c
         LEFT JOIN tenders t ON t.id = 't:' || c.unp
         LEFT JOIN amendment_winner aw
           ON aw.unp = c.unp AND aw.contract_number = c.contract_number AND aw.win_rn = 1
+        LEFT JOIN amendment_step_suspect ass
+          ON ass.unp = c.unp AND ass.contract_number = c.contract_number
       ) c
       -- EOP always; an OCDS row only when no EOP row shares its contract_number - EOP wins.
       -- Key is contract_number (the public-procurement contract document number, common to both feeds), NOT unp:
