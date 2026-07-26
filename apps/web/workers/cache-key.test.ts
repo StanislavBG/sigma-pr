@@ -129,6 +129,12 @@ describe('cacheKey', () => {
   });
 });
 
+// Allow-list entries that intentionally sit ahead of their route on this stacked-PR base (see the
+// CANONICAL_QUERY_PARAMS comment for which route each is destined for). Excluded from the stale-entry
+// assertion below so stacked-later work doesn't fail unrelated PRs; any OTHER stale entry (a typo, a
+// param whose route was removed) still fails the build.
+const EXPECTED_STALE_PLANNED_PARAMS = new Set(['a', 'b', 'by', 'cohort', 'cpv', 'metric']);
+
 describe('CANONICAL_QUERY_PARAMS drift guard', () => {
   it('covers every query param the app reads off the URL (CWE-349, #56)', () => {
     const consumed = consumedQueryParams();
@@ -139,26 +145,26 @@ describe('CANONICAL_QUERY_PARAMS drift guard', () => {
 
     // Security direction: every param a route loader / SSR render consumes must be keyed (in the
     // allow-list) or explicitly declared response-neutral, or two distinct views collapse to one
-    // cache entry and the wrong data gets served. The reverse direction (allow-list entries nothing
-    // reads yet) is intentionally NOT asserted: params for stacked-later routes legitimately sit in
-    // the allow-list ahead of their route.
+    // cache entry and the wrong data gets served.
     const allowed = new Set([...CANONICAL_QUERY_PARAMS, ...INTENTIONALLY_UNKEYED]);
     const undeclared = [...consumed].filter((p) => !allowed.has(p)).sort();
     expect(undeclared).toEqual([]);
   });
 
-  // Informational only — deliberately NOT an `it()`: allow-list entries legitimately sit ahead of
-  // their route for stacked-later work, so a test that asserts "no stale entries" would fail on
-  // every stacked base and a test that never asserts anything would be a cheater test (always
-  // green, can never fail — CLAUDE.md "NO CHEATER TESTS"). Running this as plain code in the
-  // `describe` body still surfaces stale entries via `console.info` during the CI test run, without
-  // registering as a graded test case either way.
-  // Intentionally unbounded (no count threshold): a threshold would itself start failing unrelated
-  // PRs once enough routes are stacked ahead of their allow-list entries, which is the exact
-  // merge-blocking this check exists to avoid — visibility via CI log, not a gate, is the point.
-  const consumedForStaleCheck = consumedQueryParams();
-  const stale = [...CANONICAL_QUERY_PARAMS].filter((p) => !consumedForStaleCheck.has(p)).sort();
-  if (stale.length > 0) {
-    console.info(`[cache-key] allow-list entries nothing reads yet: ${stale.join(', ')}`);
-  }
+  // Reverse direction: allow-list entries nothing currently reads. A dead/typo'd entry here is
+  // harmless for correctness (it can only over-key, never collapse two distinct responses into one
+  // cache entry) but silently degrades the cache hit rate forever if nothing catches it. Entries
+  // legitimately ahead of their not-yet-shipped route (EXPECTED_STALE_PLANNED_PARAMS) are excluded so
+  // this stays a real, failing assertion instead of either blocking unrelated stacked-PR work or
+  // being a cheater test that can never fail.
+  it('does not retain undocumented stale allow-list entries', () => {
+    const consumed = consumedQueryParams();
+    const stale = [...CANONICAL_QUERY_PARAMS]
+      .filter((p) => !consumed.has(p) && !EXPECTED_STALE_PLANNED_PARAMS.has(p))
+      .sort();
+    if (stale.length > 0) {
+      console.info(`[cache-key] unexpected stale allow-list entries: ${stale.join(', ')}`);
+    }
+    expect(stale).toEqual([]);
+  });
 });
