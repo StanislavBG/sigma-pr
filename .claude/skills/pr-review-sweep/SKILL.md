@@ -1,96 +1,118 @@
 ---
 name: pr-review-sweep
-description: Sweep one or more sigma PRs' unresolved review comments end-to-end — fetch (paginated), classify, check-if-already-fixed, fix-with-verification, reply-and-resolve. Never contacts reviewers. Use when a PR has open review feedback that needs triaging and landing.
+description: Sweep one or more sigma PRs' unresolved review comments end-to-end — fetch (paginated), classify by disposition AND bug-vs-feature type, check-if-already-fixed, queue a scheduler PRD per (PR, type), then land-and-resolve once it completes. Orchestrates 5 nested sub-skills (pr-review-sweep:fetch, :classify, :check-fixed, :queue, :land-and-resolve). Never fixes inline, never contacts reviewers. Use when a PR has open review feedback that needs triaging and landing.
 ---
 
-# pr-review-sweep
+# pr-review-sweep (orchestrator)
 
 Codifies the process used to clear ydimitrof's review rounds on sigma PRs. Run this
 per-PR whenever `/project-status` (or a manual check) surfaces unresolved review threads.
-Named skills `pr-triage-feedback`/`pr-address-feedback`/`pr-commit` were referenced in
-project memory as covering this flow, but no such files exist anywhere on this
-filesystem (checked: no `sigma/.claude/skills/` history, no matching skill in any
-plugin) — this file replaces relying on those names.
 
-## Step 1 — Fetch ground truth, fully paginated
+**Naming convention (repo-wide, see `AGENTS.md`):** sub-skill directories are prefixed
+`0-`, `1-`, ... in execution order, so a plain directory listing sorts in DAG order without
+opening any file. The invocable `name:` field stays a clean colon-scoped identifier
+(`pr-review-sweep:fetch`) without the numeric prefix.
 
-Query GitHub's GraphQL API directly. Never trust file names, a prior status report, or a
-reply's own claim about what's outstanding.
+**Always via the scheduler.** Every genuinely-unfixed thread is fixed by a `/develop` PRD,
+never inline in this session — no "fast path" for small mechanical fixes. The scheduler is
+the one place real code changes happen (global CLAUDE.md model-economics rule: interactive
+sessions run an expensive planner-tier model; execution belongs on the cheap executor
+tier). If a fast lane for small review fixes turns out to be worth having, that's a
+scheduler-level feature (a priority/fast queue lane) to build later — not a reason for this
+skill to bypass the scheduler now.
 
-```graphql
-query($n: Int!) {
-  repository(owner: "midt-bg", name: "sigma") {
-    pullRequest(number: $n) {
-      reviewThreads(first: 100) {
-        totalCount
-        nodes {
-          isResolved
-          path
-          line
-          comments(first: 3) { nodes { author { login } body createdAt } }
-        }
-      }
-    }
-  }
-}
+## Pipeline DAG
+
+```
+PR number(s)
+      │
+      ▼
+┌───────────────────────────┐
+│ 0. pr-review-sweep:fetch       │  paginated GraphQL, reviewThreads.isResolved ground truth
+└───────────────────────────┘
+      │ every unresolved thread, full text + location
+      ▼
+┌───────────────────────────┐
+│ 1. pr-review-sweep:classify    │  disposition (accept/policy-override/needs-decision)
+└───────────────────────────┘     × type (bug/feature) — two independent axes
+      │ per thread: {disposition, type}, needs-decision threads set aside
+      ▼
+┌───────────────────────────┐
+│ 2. pr-review-sweep:check-fixed │  read current code + branch log before queuing anything
+└───────────────────────────┘
+      │ survives (genuinely unfixed accept/policy-override threads)
+      ▼
+┌───────────────────────────┐
+│ 3. pr-review-sweep:queue       │  one /develop PRD per (PR, type) bundle, duplicate-guarded
+└───────────────────────────┘
+      │ queued PRD id(s), or "already queued" (idempotent)
+      ▼
+        ... async, on scheduler ...
+      │
+      ▼
+┌───────────────────────────┐
+│ 4. pr-review-sweep:land-and-   │  confirm the PRD's verification ACs ran, reply w/ SHA,
+│    resolve                │  resolve the thread
+└───────────────────────────┘
+      │
+      ▼
+   thread resolved, or reported stuck (failed/needs_review PRD)
 ```
 
-Filter to `isResolved: false`. **`first: 100` is load-bearing** — `first: 50` silently
-truncates on any PR that has grown past 50 threads (two real PRs hit this: one had 64
-threads, another had 55; the truncated queries under-reported unresolved counts and
-caused genuinely-missed comments). Always compare `totalCount` to how many nodes you
-actually paged through, so truncation is caught immediately rather than discovered later
-by a mismatched count on a subsequent sweep.
+| Step | Input | Output | On failure/empty |
+|---|---|---|---|
+| 0. `pr-review-sweep:fetch` | one or more PR numbers | every unresolved review thread, verified-complete (paginated) | n/a — loops its own fetch until `totalCount` matches nodes paged |
+| 1. `pr-review-sweep:classify` | unresolved threads | each thread tagged `{disposition, type}` | needs-decision threads are set aside, surfaced to the user, never guessed |
+| 2. `pr-review-sweep:check-fixed` | accept/policy-override threads | `already-fixed` (w/ evidence) + `survives` | already-fixed threads route straight to reply-and-resolve, skipping queue |
+| 3. `pr-review-sweep:queue` | `survives`, grouped by (PR, type) | one queued `/develop` PRD id per bundle | if a PRD for that (PR, type) is already queued/in-flight, skip and report its id — never double-queue |
+| 4. `pr-review-sweep:land-and-resolve` | a PRD reported `completed` by the scheduler | thread replied (commit SHA) + resolved | `failed`/`needs_review`/stuck PRDs are reported, never silently retried |
 
-## Step 2 — Classify each thread
+## Why two independent classification axes (step 1)
 
-Three buckets, decided per-thread, not per-PR:
+**Disposition** (accept-as-is / policy-override / needs-my-decision) answers "should this
+be done at all, and does it need a human." **Type** (bug / feature) answers "what shape of
+change is this, once we've decided to do it" — and drives which PRD template/acceptance
+criteria `pr-review-sweep:queue` writes:
 
-- **Accept-as-is** — the reviewer's ask is valid, no repo-policy reason not to do it. The
-  default bucket.
-- **Policy-override** — the comment conflicts with something the repo's own `AGENTS.md` /
-  `CLAUDE.local.md` already decided (a staged-rollout convention, an intentional
-  trade-off). Policy wins silently — no need to escalate to the user — but still reply
-  explaining why, so the reviewer isn't left wondering. Verify the policy text actually
-  says what you think it says before invoking this bucket; don't assume.
-- **Needs-my-decision** — a genuine judgment call with no clear answer from repo policy
-  alone. Stop, surface the question verbatim to the user, never guess. This is the only
-  bucket that blocks anything, and it blocks only that one thread — every other thread on
-  the PR keeps moving.
+- **Bug** — the reviewer flagged something objectively broken (wrong output, crash,
+  security issue, off-by-one, missed edge case). The PRD's ACs require: a reproduction of
+  the defect, a regression test that fails before the fix and passes after, then the fix
+  itself.
+- **Feature** — the reviewer asked for additional behavior, a refactor, or a
+  consistency/style improvement that isn't fixing broken behavior. The PRD's ACs require
+  scoping tightly to exactly what was asked (no piggybacked scope creep) and consistency
+  with existing patterns in the touched file; a regression test is only required if the ask
+  itself adds testable behavior.
 
-## Step 3 — Check if it's already fixed before writing any code
+Splitting by type — rather than one undifferentiated "fix it" PRD per PR — is what lets each
+bundle get acceptance criteria actually suited to the kind of work it is, and is the reason
+this classification exists as its own step rather than being folded into disposition.
 
-Read the current file content at the cited location, and check recent git log/commits on
-the PR's actual branch. Multiple rounds turned out to need zero new code because other
-work — sometimes from a completely separate concurrent session — had already landed the
-fix; it just hadn't been marked resolved on GitHub yet. Skipping this step wastes effort
-re-solving a solved problem and risks a redundant, conflicting second fix landing on top
-of the first.
+## Hard constants across all five steps
 
-## Step 4 — Fix directly, with real verification
+- **Ground truth for "unresolved" is GraphQL `reviewThreads.isResolved`**, fully paginated
+  (`first: 100` — smaller page sizes have silently truncated on real PRs; always compare
+  `totalCount` to nodes actually paged through). Never a last-reply/last-push heuristic.
+- **Never contact a reviewer** — no request, re-request, or nudge, at any point in this
+  process. Reviewer contact is `pr-signal`'s job alone, gated behind the user's explicit,
+  per-PR, freshly-given approval every time. A prior approval never carries forward.
+- **Never fix inline.** Every genuinely-unfixed thread goes through `/develop`, no
+  exceptions — see the scheduler note above.
+- **Idempotent re-runs.** One queued/in-flight PRD per (PR, type) bundle; replies aren't
+  re-posted; resolving an already-resolved thread is a no-op.
 
-For anything genuinely unfixed in the accept-as-is/policy-override buckets: write the
-actual code change, then run the project's real test and typecheck commands (not a
-hand-picked subset) and confirm green before touching git. Commit using this repo's
-convention — `type(scope): subject`, lowercase imperative, no trailing period, **no
-`Co-Authored-By` trailer** (CI greps for it) — then push to the contributor's fork branch
-only. Never push to `origin`, never force-push, never open a new PR to carry a review
-fix — land it on the existing PR's own branch. This step happens inline, synchronously,
-in the same pass that found the issue; never "queue it for later."
+## Why nested skills instead of one inline sequence
 
-## Step 5 — Reply, then resolve
+Each step is its own file so it shows up as its own invocation in whatever surface tracks
+skill/tool calls, and so a step can be changed (a new PRD template for a third `type`
+bucket, a different fetch page size) without touching the others. `classify` is the step
+most likely to grow — if a third type axis value earns its own PRD template later (e.g.
+`docs`, `perf`), or `queue` needs different bundling logic per type, decompose that step
+further the same way `issue-address:select` was, rather than growing this file.
 
-Post a reply on the GitHub thread naming the specific fixing commit SHA, so the reviewer
-can verify without re-reading the whole diff. Then call `resolveReviewThread` via GraphQL
-to close it. Order matters: reply first, resolve second, so there's a paper trail
-explaining why a thread closed before it drops off the unresolved list. Needs-my-decision
-threads, and any policy-override thread where convention says the reviewer should be the
-one to close it, are deliberately left unresolved after the reply — that is correct
-behavior, not an oversight.
+## What this skill is not
 
-## Hard constant across all five steps
-
-**Never contact a reviewer** — no request, re-request, or nudge, at any point in this
-process. Reviewer contact is a separate action, gated behind the user's explicit,
-per-PR, freshly-given approval every time. A prior approval never carries forward to the
-next PR or the next round.
+- Not for GitHub issues — that's `issue-address` (a different data source: issues, not
+  open-PR review threads).
+- Not a decision on whether to contact a reviewer — that's `pr-signal`, invoked separately
+  and rarely.

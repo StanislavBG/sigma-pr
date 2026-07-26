@@ -13,9 +13,9 @@ description: >-
 
 # pr-signal — the one step that contacts a reviewer (rare, gated)
 
-Input: a PR already landed cleanly by `pr-review-sweep` (threads resolved/replied, description
-current, CI green) — plus the user's explicit approval for this specific PR number, given in
-this conversation, not inherited from an earlier one. See
+Input: a PR whose queued PRDs have all landed and whose threads `pr-review-sweep:land-and-resolve`
+has replied to and resolved (CI green) — plus the user's explicit approval for this specific PR
+number, given in this conversation, not inherited from an earlier one. See
 [docs/pr-review-workflow.local.md](../../../docs/pr-review-workflow.local.md) and
 [[no-reviewer-ping-without-approval]].
 
@@ -30,9 +30,9 @@ for it, by PR number.
    - The PR is still open (`gh pr view <n> --json state,mergedAt`) — a merged/closed PR gets
      no signal; report the state change instead.
    - Every review thread is resolved (re-check now via GraphQL `reviewThreads.isResolved` — a
-     `pr-review-sweep` report from even a few minutes ago can be stale if anything else touched the
-     PR, and a new comment that arrived since means the PR goes back through
-     `pr-review-sweep`, not to a signal).
+     `pr-review-sweep:land-and-resolve` report from even a few minutes ago can be stale if
+     anything else touched the PR, and a new comment that arrived since means the PR goes back
+     through `pr-review-sweep:classify`, not to a signal).
    - CI is green **right now** — re-run `gh pr checks <n> --repo midt-bg/sigma` immediately
      before acting. An approval given while CI was green does not survive CI going red in
      between (a later push, a flaky rerun). If CI is red at signal-time, stop and report it —

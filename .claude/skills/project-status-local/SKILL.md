@@ -11,36 +11,42 @@ description: >-
   the full flow this feeds into (pr-review-sweep, run per blocking PR).
 ---
 
-# project-status-local (sigma) — my open PR rollup, then the sweep→verify→land loop
+# project-status-local (sigma) — my open PR rollup, then the sweep→queue→land loop
 
 This skill's own bash steps are read-only — it never edits code, comments, or pushes directly.
-It chains into `pr-review-sweep` (fetch → classify → check-if-already-fixed → fix-with-verification
-→ reply-and-resolve, run per blocking PR), so a single `/project-status` run drives every
-blocking PR's unresolved review threads to resolved without a human re-invoking the skill by
-hand. See [docs/pr-review-workflow.local.md](../../../docs/pr-review-workflow.local.md) for how
-this fits the larger flow.
+It chains into `pr-review-sweep` (a 5-step nested pipeline: `:fetch` → `:classify` →
+`:check-fixed` → `:queue` → `:land-and-resolve`, run per blocking PR), so a single
+`/project-status` run drives every blocking PR's unresolved review threads to a queued fix and
+eventually resolved, without a human re-invoking the skill by hand. See
+[docs/pr-review-workflow.local.md](../../../docs/pr-review-workflow.local.md) for how this fits
+the larger flow.
 
 > Historical note: this skill originally chained through a three-way split
 > (`pr-triage-feedback` → `pr-address-feedback` → `pr-commit`, each queuing a `/develop` PRD).
 > Those files were lost when the branch carrying them (`recover/pr-overruns-wip-586`) never
-> merged; `pr-review-sweep` was independently rebuilt as a single-skill replacement that fixes
-> inline+synchronously rather than queuing a PRD per thread. That's a deliberate scope call for
-> small, mechanical review-comment fixes — re-litigate it with the user before reintroducing a
-> PRD-per-PR queue here.
+> merged, and a later rebuild of `pr-review-sweep` briefly fixed threads inline instead of
+> queuing them. That inline shortcut has since been reverted — `pr-review-sweep:queue` always
+> queues a `/develop` PRD, no exceptions — per the standing rule that real code changes never
+> happen inline in an interactive session. If a fast lane for small mechanical review fixes is
+> ever worth having, that belongs as a priority/fast-queue lane in the scheduler itself, not as
+> a bypass here.
 
 ## Steps
 
 0. **This is now the full loop, not just a report.** After rendering the rollup (step 4), for
    every PR in the blocking-on-me set, auto-run `pr-review-sweep` — it classifies each unresolved
-   thread (accept-as-is / policy-override / needs-my-decision), fixes accept/policy-override
-   threads directly with real verification, then replies and resolves. A needs-my-decision
-   thread still stops and asks — never guessed — but it halts only **that thread**; every other
-   thread on every other PR keeps flowing, and the open questions are collected into the final
-   report. This turns one `/project-status` invocation into: audit → sweep every blocked PR's
-   threads → land the fixes → report readiness-to-signal. `pr-signal` — the separate,
-   rarely-invoked skill that actually contacts a reviewer — is never auto-run by this chain. The
-   reviewer-ping gate below is never relaxed by this automation — sweeping and landing fixes
-   needs no approval; signaling a reviewer always does, per PR, fresh each time.
+   thread by disposition (accept-as-is / policy-override / needs-my-decision) and, for threads
+   going forward, by type (bug / feature), checks whether it's already fixed, queues a
+   `/develop` PRD per (PR, type) bundle for what's left, and — once the scheduler reports a PRD
+   `completed` — replies and resolves the threads it addressed. A needs-my-decision thread
+   still stops and asks — never guessed — but it halts only **that thread**; every other thread
+   on every other PR keeps flowing, and the open questions are collected into the final report.
+   This turns one `/project-status` invocation into: audit → sweep every blocked PR's threads →
+   queue their fixes → (on a later run, once PRDs complete) land and resolve → report
+   readiness-to-signal. `pr-signal` — the separate, rarely-invoked skill that actually contacts
+   a reviewer — is never auto-run by this chain. The reviewer-ping gate below is never relaxed
+   by this automation — sweeping, queuing, and landing fixes needs no approval; signaling a
+   reviewer always does, per PR, fresh each time.
 
 1. **List my open PRs.**
    ```bash
@@ -58,7 +64,7 @@ this fits the larger flow.
    ```
    Count unresolved review threads using GraphQL `reviewThreads.isResolved` as the ground
    truth — the last-reply/last-push heuristic drifts and different runs disagree; never use it
-   for the count (same discipline `pr-review-sweep` step 1 applies, `first: 100` and all). Note
+   for the count (same discipline `pr-review-sweep:fetch` applies, `first: 100` and all). Note
    the reviewer and how long it's been unanswered.
 
 3. **Determine what's blocking merge**, per PR:
@@ -90,9 +96,9 @@ this fits the larger flow.
 
 Never request or re-request a reviewer, and never post anything that functions as a nudge to a
 reviewer (a "ready for re-review" comment, an @-mention, a re-request), without the user's
-**explicit, per-PR** approval first. `pr-review-sweep` never touches this — it fixes, replies,
-and resolves, and stops. Only `pr-signal` contacts a reviewer, and only on its own gate, described
-there. This
+**explicit, per-PR** approval first. `pr-review-sweep` never touches this — it queues, lands,
+replies, and resolves, and stops. Only `pr-signal` contacts a reviewer, and only on its own
+gate, described there. This
 gate is stricter than — and overrides — the CI-green-and-threads-resolved heuristic: that
 heuristic decides when a PR is *technically* ready to signal, not whether to actually send the
 signal. Reaching
