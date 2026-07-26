@@ -39,20 +39,20 @@ export function ComboTrendChart({
   const bw = Math.max(2, ((W - 2 * PAD) / n) * 0.66);
 
   // Final period is partial (still filling): dashed line tail + faded bar, like TrendChart.
+  // findIndex returns -1 when no point is partial — that's the canonical "none" sentinel here,
+  // not 0, so `hasPartial` must not rely on index truthiness (a partial period at index 0 is a
+  // real partial period, not "no partial period").
   const partialIdx = points.findIndex((p) => p.partial);
-  // Invariant: the partial period is always the last point. `hasPartial` treats index 0 as
-  // "no partial period" — if a partial period ever ends up first, this silently renders the whole
-  // line solid instead of catching the regression.
-  const hasPartial = partialIdx > 0;
+  const hasPartial = partialIdx !== -1;
   if (import.meta.env.DEV && partialIdx === 0 && n > 1) {
     console.warn(
       `ComboTrendChart: partial period at index 0 of ${n} — the partial-is-always-last ` +
-        'invariant is broken upstream; the chart will render the whole line solid instead of dashed.',
+        'invariant is broken upstream; the chart will render with no solid segment before it.',
     );
   } else if (import.meta.env.DEV && partialIdx > 0 && partialIdx !== n - 1) {
     console.warn(
       `ComboTrendChart: partial period at index ${partialIdx} of ${n} is not last — the ` +
-        'partial-is-always-last invariant is broken upstream; the chart will render as if there is no partial period.',
+        'partial-is-always-last invariant is broken upstream; the dashed tail will connect from the wrong point.',
     );
   }
   const solidEnd = hasPartial ? partialIdx - 1 : n - 1;
@@ -61,7 +61,7 @@ export function ComboTrendChart({
     .slice(0, solidEnd + 1)
     .map((_p, i) => `${i ? 'L' : 'M'}${xy(i)}`)
     .join(' ');
-  const dashed = hasPartial ? `M${xy(solidEnd)} L${xy(partialIdx)}` : '';
+  const dashed = hasPartial && solidEnd >= 0 ? `M${xy(solidEnd)} L${xy(partialIdx)}` : '';
 
   const ticks = yearAxisTicks(points, granularity);
 
