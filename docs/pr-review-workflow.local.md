@@ -64,15 +64,24 @@ reporting, and it does not contact a reviewer either.
    - `:classify` — per thread, two axes: disposition (accept-as-is / policy-override — repo
      policy wins silently over a conflicting reviewer ask, per AGENTS.md/CLAUDE.local.md —
      / needs-my-decision) and type (bug / feature, for accept/policy-override threads only).
-   - `:check-fixed` — read current code + recent commits before queuing anything; already-fixed
-     threads skip straight to `:land-and-resolve`.
-   - `:queue` — bundle survivors by (PR, type) into one `/develop` PRD per bundle, with
-     type-appropriate acceptance criteria (a `bug` bundle requires a reproduction + regression
-     test; a `feature` bundle requires tight scope + pattern consistency). Duplicate-guarded —
-     never double-queues the same bundle.
-   - `:land-and-resolve` — once the scheduler reports a bundle's PRD `completed` (a later run
-     notices this, not the same invocation that queued it), confirm its verification actually
-     ran, reply naming the fixing commit SHA, resolve the thread.
+   - `:check-fixed` — **mandatory for every accept-as-is/policy-override thread, no
+     exceptions** — read current code + recent commits before queuing or replying to
+     anything. Triages each into one of three outcomes: already-fixed (skip straight to
+     `:land-and-resolve`, cite the commit), reply-only (needs zero code change — a repo
+     convention or an intentional-design confirmation already answers it; skip straight to
+     `:land-and-resolve`, cite the reasoning), or survives (genuinely needs new code, goes
+     to `:queue`). Skipping this step on a policy-override thread because it "obviously"
+     needs no code check is exactly how a wrong reply gets posted — it happened once for
+     real on PR #206 and had to be corrected.
+   - `:queue` — bundle `survives` threads only by (PR, type) into one `/develop` PRD per
+     bundle, with type-appropriate acceptance criteria (a `bug` bundle requires a
+     reproduction + regression test; a `feature` bundle requires tight scope + pattern
+     consistency). Duplicate-guarded — never double-queues the same bundle.
+   - `:land-and-resolve` — for already-fixed/reply-only threads, acts immediately (re-
+     verifying the evidence is still accurate). For queued PRDs, once the scheduler reports
+     a bundle's PRD `completed` (a later run notices this, not the same invocation that
+     queued it), confirm its verification actually ran, reply naming the fixing commit SHA,
+     resolve the thread.
    A needs-my-decision thread stops and asks — never guessed — but halts only **that thread**;
    every other thread on every other PR keeps flowing.
 3. **`pr-signal`** (separate, rare, never auto-chained) — the only skill that requests or

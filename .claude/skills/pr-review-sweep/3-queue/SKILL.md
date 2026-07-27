@@ -5,10 +5,15 @@ description: Step 3 of pr-review-sweep — bundle surviving accept-as-is/policy-
 
 # pr-review-sweep:queue
 
-Group `survives` threads (from `pr-review-sweep:check-fixed`) by **(PR number, type)** —
-up to two bundles per PR, one `bug` and one `feature`. Queue each bundle as its own
-`/develop` PRD. Never write the fix in this session; this step's own actions are read-only
-except for the act of queuing.
+Only ever receives the **survives** list from `pr-review-sweep:check-fixed` — threads that
+genuinely need a code change that doesn't exist yet. `check-fixed` has already routed
+already-fixed and reply-only threads straight to `land-and-resolve`, so if you're looking
+at a thread here, it needs real code written; don't second-guess that by trying to answer
+it with a reply instead of a PRD.
+
+Group `survives` threads by **(PR number, type)** — up to two bundles per PR, one `bug` and
+one `feature`. Queue each bundle as its own `/develop` PRD. Never write the fix in this
+session; this step's own actions are read-only except for the act of queuing.
 
 ## Duplicate-PRD guard (idempotency)
 

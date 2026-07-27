@@ -38,34 +38,35 @@ PR number(s)
       │ per thread: {disposition, type}, needs-decision threads set aside
       ▼
 ┌───────────────────────────┐
-│ 2. pr-review-sweep:check-fixed │  read current code + branch log before queuing anything
-└───────────────────────────┘
-      │ survives (genuinely unfixed accept/policy-override threads)
-      ▼
-┌───────────────────────────┐
-│ 3. pr-review-sweep:queue       │  one /develop PRD per (PR, type) bundle, duplicate-guarded
-└───────────────────────────┘
-      │ queued PRD id(s), or "already queued" (idempotent)
-      ▼
-        ... async, on scheduler ...
-      │
-      ▼
-┌───────────────────────────┐
-│ 4. pr-review-sweep:land-and-   │  confirm the PRD's verification ACs ran, reply w/ SHA,
-│    resolve                │  resolve the thread
-└───────────────────────────┘
-      │
-      ▼
-   thread resolved, or reported stuck (failed/needs_review PRD)
+│ 2. pr-review-sweep:check-fixed │  MANDATORY for every survivor — triage into 3 outcomes
+└───────────────────────────┘     before queuing or replying to anything
+      │              │                      │
+      │ already-fixed│ reply-only            │ survives (genuinely needs new code)
+      ▼              ▼                      ▼
+      └──────┬───────┘          ┌───────────────────────────┐
+             │                  │ 3. pr-review-sweep:queue       │  one /develop PRD per
+             │                  └───────────────────────────┘  (PR, type) bundle,
+             │                        │ queued PRD id, or         duplicate-guarded
+             │                        │ "already queued"
+             │                        ▼
+             │                  ... async, on scheduler ...
+             │                        │
+             ▼                        ▼
+       ┌───────────────────────────────────┐
+       │ 4. pr-review-sweep:land-and-resolve    │  cite SHA (already-fixed/PRD) or
+       └───────────────────────────────────┘  reasoning (reply-only); reply; resolve
+                     │
+                     ▼
+       thread resolved, or reported stuck (failed/needs_review PRD)
 ```
 
 | Step | Input | Output | On failure/empty |
 |---|---|---|---|
 | 0. `pr-review-sweep:fetch` | one or more PR numbers | every unresolved review thread, verified-complete (paginated) | n/a — loops its own fetch until `totalCount` matches nodes paged |
 | 1. `pr-review-sweep:classify` | unresolved threads | each thread tagged `{disposition, type}` | needs-decision threads are set aside, surfaced to the user, never guessed |
-| 2. `pr-review-sweep:check-fixed` | accept/policy-override threads | `already-fixed` (w/ evidence) + `survives` | already-fixed threads route straight to reply-and-resolve, skipping queue |
-| 3. `pr-review-sweep:queue` | `survives`, grouped by (PR, type) | one queued `/develop` PRD id per bundle | if a PRD for that (PR, type) is already queued/in-flight, skip and report its id — never double-queue |
-| 4. `pr-review-sweep:land-and-resolve` | a PRD reported `completed` by the scheduler | thread replied (commit SHA) + resolved | `failed`/`needs_review`/stuck PRDs are reported, never silently retried |
+| 2. `pr-review-sweep:check-fixed` | accept/policy-override threads — **every one, no shortcuts** | `already-fixed` (w/ commit) + `reply-only` (w/ reasoning) + `survives` | never skip this because a thread's disposition "obviously" needs no code check — see the incident documented in that step's own file |
+| 3. `pr-review-sweep:queue` | `survives` only, grouped by (PR, type) | one queued `/develop` PRD id per bundle | if a PRD for that (PR, type) is already queued/in-flight, skip and report its id — never double-queue |
+| 4. `pr-review-sweep:land-and-resolve` | already-fixed / reply-only (immediate) or a PRD reported `completed` by the scheduler | thread replied (SHA or reasoning) + resolved | `failed`/`needs_review`/stuck PRDs are reported, never silently retried |
 
 ## Why two independent classification axes (step 1)
 
