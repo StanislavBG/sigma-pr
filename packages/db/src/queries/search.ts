@@ -98,6 +98,23 @@ interface HitRow {
   eik_valid: number | null;
 }
 
+// FTS5's default bm25() rewards raw term frequency: a title that repeats the query terms several
+// times (e.g. a municipality's name field concatenating several child-entity names — issue #25)
+// can outscore a title that matches once, cleanly. bm25's own length normalization isn't enough to
+// offset that within-document repetition, so we dampen `rank` by title length on top of it — the
+// divisor grows by 1 per 20 chars, a soft enough curve that it reorders repeat-heavy blobs below
+// clean short matches without sinking legitimate longer (but single-match) titles disproportionately.
+const RANK_EXPR = `rank / (1.0 + LENGTH(search_index.title) / 20.0)`;
+
+export const SEARCH_HITS_SQL = `SELECT search_index.ref, search_index.title, search_index.ident,
+       search_index.subtitle, search_index.amount,
+       ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid
+FROM search_index
+LEFT JOIN company_totals ct
+  ON search_index.kind = 'company' AND ct.bidder_id = search_index.ref
+WHERE search_index.kind = ? AND search_index MATCH ?
+ORDER BY ${RANK_EXPR} LIMIT ?`;
+
 export async function search(db: D1Database, rawQuery: string): Promise<SearchResults> {
   const query = (rawQuery ?? '').trim();
   const match = searchMatchQuery(query);
@@ -120,16 +137,7 @@ export async function search(db: D1Database, rawQuery: string): Promise<SearchRe
       const total = counts.get(g.kind) ?? 0;
       if (total === 0) return { kind: g.kind, label: g.label, total: 0, hits: [], moreHref: null };
       const { results } = await db
-        .prepare(
-          `SELECT search_index.ref, search_index.title, search_index.ident,
-                  search_index.subtitle, search_index.amount,
-                  ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid
-           FROM search_index
-           LEFT JOIN company_totals ct
-             ON search_index.kind = 'company' AND ct.bidder_id = search_index.ref
-           WHERE search_index.kind = ? AND search_index MATCH ?
-           ORDER BY rank LIMIT ?`,
-        )
+        .prepare(SEARCH_HITS_SQL)
         .bind(g.kind, match, g.limit)
         .all<HitRow>();
       const hits: SearchHit[] = results.map((r) => {
