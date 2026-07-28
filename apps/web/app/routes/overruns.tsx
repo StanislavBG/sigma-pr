@@ -2,6 +2,7 @@ import { type ReactNode, useState } from 'react';
 import { Link, useNavigation, useSearchParams } from 'react-router';
 import { count, date, money, moneyBare, pct, signedPct } from '@sigma/shared';
 import {
+  getDb,
   getOverrunAnnexes,
   getOverrunsAnalytics,
   type OverrunAuthorityRow,
@@ -47,14 +48,14 @@ export function headers() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const by = new URL(request.url).searchParams.get('by') === 'percent' ? 'percent' : 'absolute';
-  const { env } = context.cloudflare;
+  const db = getDb(context.cloudflare.env);
   return withDbRetry(async () => {
     // Five bounded queries (see getOverrunsAnalytics): leaderboard, corpus aggregate, median, by-
     // authority, by-sector. Then ONE more bounded query for the shown contracts' annex history — the
     // inspector is client-selected, so everything it needs is fetched here and rendered from memory.
-    const data = await getOverrunsAnalytics(env.DB, { by });
+    const data = await getOverrunsAnalytics(db, { by });
     const annexes = await getOverrunAnnexes(
-      env.DB,
+      db,
       data.rows.map((r) => r.contractId),
     );
     return { data, by, annexesByContract: groupAnnexes(annexes) };

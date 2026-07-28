@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import {
+  getDb,
   getFlowsHeadline,
   getOpaqueShareByYear,
   getOverrunsHeadline,
@@ -42,7 +43,7 @@ export function headers() {
 // getSpendingTrend month series (3: series + coverage + as_of) + getOpaqueShareByYear (1) = 7
 // statements per cold load. The derivations (avg YoY, peak month, opaque headline) are pure helpers.
 export async function loader({ context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
+  const db = getDb(context.cloudflare.env);
   const [overruns, flows, region, trend, opaque] = await Promise.all([
     getOverrunsHeadline(db),
     getFlowsHeadline(db),
