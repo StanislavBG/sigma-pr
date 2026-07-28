@@ -1,6 +1,6 @@
 import { Form, Link, useNavigation, useSearchParams, useSubmit } from 'react-router';
 import { count } from '@sigma/shared';
-import { getEntityCounterparties, getEntityNetwork } from '@sigma/db';
+import { getDb, getEntityCounterparties, getEntityNetwork } from '@sigma/db';
 import type { Route } from './+types/network';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { PageHeader } from '../components/PageHeader';
@@ -31,7 +31,7 @@ export function headers() {
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sp = new URL(request.url).searchParams;
   const center = parseCenter(sp.get('center'));
-  const db = context.cloudflare.env.DB;
+  const db = getDb(context.cloudflare.env);
   // `g=1` marks a client re-centre fetch (NetworkGraph.recentre): it consumes only the graph data, so
   // skip the centre-picker options (unchanged) and the counterparties page (the address bar — and the
   // table — don't change on re-centre). Avoids paying for queries the result throws away.
