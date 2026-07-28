@@ -4,6 +4,7 @@ import type { CpvGroupStat } from '@sigma/api-contract';
 const getCpvGroupMedians = vi.fn().mockResolvedValue([]);
 
 vi.mock('@sigma/db', () => ({
+  getDb: vi.fn().mockReturnValue({}),
   getSpendingTrend: vi.fn().mockResolvedValue({ points: [], years: [] }),
   getCpvGroupStats: vi.fn().mockResolvedValue({ groups: [], totalGroups: 0 }),
   listOverviewContracts: vi.fn().mockResolvedValue([]),

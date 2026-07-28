@@ -5,6 +5,7 @@ import {
   getQualitySummary,
   getRegionalSpending,
   getSpendingTrend,
+  getDb,
 } from '@sigma/db';
 import { count, money, pct } from '@sigma/shared';
 import type { ReactNode } from 'react';
@@ -35,7 +36,7 @@ export function headers() {
 }
 
 export async function loader({ context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
+  const db = getDb(context.cloudflare.env);
   const [flows, regional, trend, competition, quality] = await Promise.all([
     getFlows(db, { top: 3 }),
     getRegionalSpending(db, { funding: 'all' }),

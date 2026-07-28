@@ -10,7 +10,7 @@ import type {
   QualityScorecard,
 } from '@sigma/api-contract';
 import { count, date, money, pct, plural } from '@sigma/shared';
-import { getQuality, QUALITY_WEIGHTS, qualityRankDefaultDir } from '@sigma/db';
+import { getDb, getQuality, QUALITY_WEIGHTS, qualityRankDefaultDir } from '@sigma/db';
 import type { Route } from './+types/quality';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { PageHeader } from '../components/PageHeader';
@@ -150,7 +150,7 @@ const COV_TIERS: { tier: QualityCoverageTier; range: string; label: string }[] =
 ];
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
+  const db = getDb(context.cloudflare.env);
   const sp = new URL(request.url).searchParams;
   // „Разбивка" ranking controls come from the shared parser (validated before they can shape a
   // cache key or a query — CWE-349); the db layer re-validates at its own boundary.
