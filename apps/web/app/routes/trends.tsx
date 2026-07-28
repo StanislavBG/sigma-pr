@@ -4,6 +4,7 @@ import { count, date as fmtDate, money, plural } from '@sigma/shared';
 import {
   getCpvGroupMedians,
   getCpvGroupStats,
+  getDb,
   getSpendingTrend,
   listOverviewContracts,
 } from '@sigma/db';
@@ -54,7 +55,7 @@ const STEP_GRANULARITY: Record<Step, TrendGranularity> = {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sp = new URL(request.url).searchParams;
-  const db = context.cloudflare.env.DB;
+  const db = getDb(context.cloudflare.env);
 
   // angle/step/sort share the same validate-or-fallback discipline as cpvGroupSelection below
   // (an unrecognized value falls back to a known-safe default rather than passing through).
