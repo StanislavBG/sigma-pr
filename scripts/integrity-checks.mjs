@@ -381,7 +381,10 @@ export async function checkStagingReconciliation(runner) {
 //    contract_features table exists from an earlier run.
 export async function checkContractFeaturesIntegrity(runner) {
   const name = 'contract-features-integrity';
-  if (!(await tableExists(runner, 'contract_features')) || !(await tableExists(runner, 'tmp_diag'))) {
+  if (
+    !(await tableExists(runner, 'contract_features')) ||
+    !(await tableExists(runner, 'tmp_diag'))
+  ) {
     return {
       name,
       ok: true,
@@ -390,16 +393,18 @@ export async function checkContractFeaturesIntegrity(runner) {
     };
   }
   const r =
-    (await rows(
-      runner,
-      'SELECT' +
-        ' (SELECT COUNT(*) FROM contracts) AS contracts_rows,' +
-        ' (SELECT COUNT(*) FROM contract_features) AS contract_features_rows,' +
-        ' (SELECT unmapped_procedure_rows FROM tmp_diag) AS unmapped_procedure_rows,' +
-        " (SELECT COUNT(*) FROM contract_features WHERE value_flag = 'value_suspect' AND (score_overall IS NOT NULL OR score_c IS NOT NULL)) AS value_suspect_leak_rows," +
-        ' (SELECT COUNT(*) FROM contract_features WHERE single_offer = 1 AND score_a_bids > 0 AND peer_has_multi = 1) AS a1_floor_violations,' +
-        " (SELECT COUNT(*) FROM contract_features cf JOIN contracts c ON c.id = cf.contract_id JOIN tenders t ON t.id = c.tender_id WHERE t.procedure_type = 'Пряко договаряне' AND cf.score_b <> 0) AS direct_award_b1_nonzero",
-    ))[0] || {};
+    (
+      await rows(
+        runner,
+        'SELECT' +
+          ' (SELECT COUNT(*) FROM contracts) AS contracts_rows,' +
+          ' (SELECT COUNT(*) FROM contract_features) AS contract_features_rows,' +
+          ' (SELECT unmapped_procedure_rows FROM tmp_diag) AS unmapped_procedure_rows,' +
+          " (SELECT COUNT(*) FROM contract_features WHERE value_flag = 'value_suspect' AND (score_overall IS NOT NULL OR score_c IS NOT NULL)) AS value_suspect_leak_rows," +
+          ' (SELECT COUNT(*) FROM contract_features WHERE single_offer = 1 AND score_a_bids > 0 AND peer_has_multi = 1) AS a1_floor_violations,' +
+          " (SELECT COUNT(*) FROM contract_features cf JOIN contracts c ON c.id = cf.contract_id JOIN tenders t ON t.id = c.tender_id WHERE t.procedure_type = 'Пряко договаряне' AND cf.score_b <> 0) AS direct_award_b1_nonzero",
+      )
+    )[0] || {};
   const contractsRows = num(r.contracts_rows);
   const contractFeaturesRows = num(r.contract_features_rows);
   const unmappedProcedureRows = num(r.unmapped_procedure_rows);
