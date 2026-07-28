@@ -4,6 +4,7 @@ import { count, date as fmtDate, money, plural } from '@sigma/shared';
 import {
   getCpvGroupMedians,
   getCpvGroupStats,
+  getDb,
   getSpendingTrend,
   listOverviewContracts,
 } from '@sigma/db';
@@ -63,7 +64,7 @@ export function paginateContracts<T>(
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sp = new URL(request.url).searchParams;
-  const db = context.cloudflare.env.DB;
+  const db = getDb(context.cloudflare.env);
 
   const angle = pick<Angle>(sp.get('angle'), ['time', 'cpv', 'cross'], 'time');
   const step = pick<Step>(sp.get('step'), ['m', 'q', 'y'], 'q');

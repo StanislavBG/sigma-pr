@@ -24,3 +24,8 @@
 id = "GHSA-qwww-vcr4-c8h2"
 ignoreUntil = 2026-10-01T00:00:00Z
 reason = "CSRF in react-router's unstable RSC code paths only (GHSA-qwww-vcr4-c8h2) - this app does not use RSC (verified via repo-wide grep for RSC APIs). No fix in the 7.x line; upgrading to 8.x is a major breaking change out of scope for a security patch to an unused code path."
+
+# sharp — GHSA-f88m-g3jw-g9cj was suppressed on main (a29834c) while sharp was pinned to
+# 0.34.5 by miniflare. This branch independently bumped sharp to ^0.35.0 (5f94c94), which
+# resolves the advisory outright, so no suppression entry is needed here — see the
+# "AT EVERY MERGE" policy above.
