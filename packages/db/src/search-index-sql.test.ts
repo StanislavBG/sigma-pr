@@ -92,15 +92,33 @@ describe('search ranking SQL (real SQLite FTS5, SEARCH_HITS_SQL)', () => {
 
       const titles = rankedTitles(dbPath, 'детска градина');
 
-      // Both are single, clean matches for the query; a longer descriptive title matching once
-      // should not be reordered to a wildly worse position than an equally clean shorter title —
-      // it should still be a top hit, not pushed out by the length dampening meant for repeat-blobs.
-      expect(titles).toEqual(
-        expect.arrayContaining([
-          'Детска градина Дъга',
-          'Общинска детска градина за изкуство №5 към Столична община район Витоша',
-        ]),
-      );
+      // Both are single, clean matches. The dampening does put the shorter one first — that is its
+      // job — but the longer descriptive title must stay a top hit rather than being buried. Asserted
+      // as the EXACT order: `arrayContaining` would pass no matter how the two are ordered (both rows
+      // come back under LIMIT 10 regardless), so it could not detect the regression it guards against.
+      expect(titles).toEqual([
+        'Детска градина Дъга',
+        'Общинска детска градина за изкуство №5 към Столична община район Витоша',
+      ]);
+    });
+  });
+
+  // The ordering above can be satisfied by ordering the whole match set — which is exactly the
+  // regression to prevent. `ORDER BY rank` is the only form FTS5 optimizes (rank-ordering index +
+  // LIMIT pushdown); ordering by an expression over rank degrades to materializing and sorting every
+  // matching row. On „община"-class terms that is tens of thousands of rows per keystroke, and D1
+  // bills rows read. Lock the plan so a later simplification back to a single-level query is caught.
+  it('drives the match with FTS5 rank ordering, not a full sort of every match', () => {
+    withDb((dbPath) => {
+      insertAuthorityRows(dbPath, [['auth:1', 'Община Ботевград']]);
+      const sql = SEARCH_HITS_SQL.replace('?', "'authority'")
+        .replace('?', `'${searchMatchQuery('ботевград')}'`)
+        .replace('?', '6');
+      const plan = sqlite(dbPath, `EXPLAIN QUERY PLAN ${sql}`);
+
+      // idx 32 is FTS5's "ordering by rank" flag; idx 0 means it fell back to an unordered scan.
+      expect(plan).toMatch(/VIRTUAL TABLE INDEX 32/);
+      expect(plan).not.toMatch(/VIRTUAL TABLE INDEX 0/);
     });
   });
 });
