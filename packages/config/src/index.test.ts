@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLASSIFIED_PROCEDURE_TYPES,
+  CPV_BUCKET_GOODS,
   CPV_BUCKET_SERVICES,
   CPV_BUCKET_WORKS,
   CPV_CATEGORIES,
@@ -79,22 +80,30 @@ describe('cpvBucket', () => {
   });
 
   it('never leaves a catalogued division on the default „other" bucket', () => {
-    // Guard: a future service division added to CPV_SECTORS but not to CPV_BUCKET_SERVICES would
-    // silently fall through to „goods" — but one added entirely outside the bucket sets (none today)
-    // would land on „other". Every catalogued code MUST resolve to a real bucket, never the fallback.
+    // Guard: goods is an explicit set (CPV_BUCKET_GOODS), not a fallback, so a future division
+    // added to CPV_SECTORS but omitted from all three bucket sets lands on „other" here — this
+    // test fails loudly instead of the omission being silently absorbed into „goods".
     for (const sector of CPV_SECTORS) {
       expect(cpvBucket(sector.code)).not.toBe('other');
     }
   });
 
-  it('keeps CPV_BUCKET_WORKS/SERVICES a subset of CPV_DIVISION_SET (data-hygiene guard)', () => {
+  it('keeps CPV_BUCKET_WORKS/SERVICES/GOODS a subset of CPV_DIVISION_SET (data-hygiene guard)', () => {
     // cpvBucket checks CPV_DIVISION_SET membership before the bucket sets, so a code present in
-    // CPV_BUCKET_WORKS/SERVICES but missing from CPV_DIVISION_SET is already routed to „other" today
-    // — safe, but silently unreachable and a sign the bucket/division tables have drifted apart. Fail
-    // loudly here instead of leaving a real works/services division miscategorized as „other".
-    for (const code of [...CPV_BUCKET_WORKS, ...CPV_BUCKET_SERVICES]) {
+    // a bucket set but missing from CPV_DIVISION_SET is already routed to „other" today — safe,
+    // but silently unreachable and a sign the bucket/division tables have drifted apart. Fail
+    // loudly here instead of leaving a real bucket division miscategorized as „other".
+    for (const code of [...CPV_BUCKET_WORKS, ...CPV_BUCKET_SERVICES, ...CPV_BUCKET_GOODS]) {
       expect(CPV_DIVISION_SET.has(code)).toBe(true);
     }
+  });
+
+  it('CPV_BUCKET_WORKS ∪ CPV_BUCKET_SERVICES ∪ CPV_BUCKET_GOODS equals CPV_SECTORS exactly', () => {
+    // The load-bearing guard for the goods fallback removal: if a future division is added to
+    // CPV_SECTORS and forgotten in every bucket set, this union falls short of CPV_DIVISION_SET
+    // and the test fails — it can no longer silently land in „goods" (issue flagged on #171/#193).
+    const union = new Set([...CPV_BUCKET_WORKS, ...CPV_BUCKET_SERVICES, ...CPV_BUCKET_GOODS]);
+    expect(union).toEqual(CPV_DIVISION_SET);
   });
 });
 
