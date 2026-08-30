@@ -176,7 +176,10 @@ describe('CANONICAL_QUERY_PARAMS drift guard', () => {
     // mapping (e.g. someone widening EXPECTED_STALE_PLANNED_PARAMS to silence a real typo) fails
     // loudly instead of being masked.
     for (const p of rawStale) {
-      expect(PLANNED_PARAM_ROUTES[p], `${p} is exempted but has no PLANNED_PARAM_ROUTES entry`).toBeTruthy();
+      expect(
+        PLANNED_PARAM_ROUTES[p],
+        `${p} is exempted but has no PLANNED_PARAM_ROUTES entry`,
+      ).toBeTruthy();
     }
 
     const stale = rawStale.filter((p) => !EXPECTED_STALE_PLANNED_PARAMS.has(p));

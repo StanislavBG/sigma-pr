@@ -38,7 +38,9 @@ const EXPECTED_MIGRATION_FILES = [
 
 describe('migration file inventory', () => {
   it('contains exactly the expected migration files, with no number collisions', () => {
-    const actual = readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+    const actual = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
     expect(actual).toEqual([...EXPECTED_MIGRATION_FILES].sort());
   });
 });
