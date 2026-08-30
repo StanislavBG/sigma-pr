@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { cacheKey } from './cache-key';
-import { CANONICAL_QUERY_PARAMS, INTENTIONALLY_UNKEYED } from '../app/lib/query-params';
+import {
+  CANONICAL_QUERY_PARAMS,
+  INTENTIONALLY_UNKEYED,
+  PLANNED_PARAM_ROUTES,
+} from '../app/lib/query-params';
 
 function cacheUrl(input: string): URL {
   return new URL(cacheKey(new Request(input), 'deploy-test').url);
@@ -159,9 +163,23 @@ describe('CANONICAL_QUERY_PARAMS drift guard', () => {
   // being a cheater test that can never fail.
   it('does not retain undocumented stale allow-list entries', () => {
     const consumed = consumedQueryParams();
-    const stale = [...CANONICAL_QUERY_PARAMS]
-      .filter((p) => !consumed.has(p) && !EXPECTED_STALE_PLANNED_PARAMS.has(p))
-      .sort();
+    const rawStale = [...CANONICAL_QUERY_PARAMS].filter((p) => !consumed.has(p)).sort();
+
+    // Info-only, but a real assertion: every currently-unconsumed allow-list entry must be exactly
+    // the six pinned planned params — no more (an extra entry, e.g. a typo of one of these six that
+    // produced a distinct string, would show up here and fail), no fewer (a shipped route dropped
+    // from the pin without updating it here would also fail). This is what makes the exemption below
+    // catch a typo among a/b/by/cohort/cpv/metric themselves, not just typos of other params.
+    expect(rawStale).toEqual([...EXPECTED_STALE_PLANNED_PARAMS].sort());
+
+    // Every pinned exemption must name an actual destination route — a bare Set entry with no
+    // mapping (e.g. someone widening EXPECTED_STALE_PLANNED_PARAMS to silence a real typo) fails
+    // loudly instead of being masked.
+    for (const p of rawStale) {
+      expect(PLANNED_PARAM_ROUTES[p], `${p} is exempted but has no PLANNED_PARAM_ROUTES entry`).toBeTruthy();
+    }
+
+    const stale = rawStale.filter((p) => !EXPECTED_STALE_PLANNED_PARAMS.has(p));
     if (stale.length > 0) {
       console.info(`[cache-key] unexpected stale allow-list entries: ${stale.join(', ')}`);
     }

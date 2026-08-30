@@ -20,6 +20,29 @@ describe('MetricInfo', () => {
     expect(root?.className).not.toContain('is-open');
   });
 
+  it('actually hides the popover on close even though the click gave the button focus', () => {
+    // Clicking a real <button> focuses it (jsdom mirrors Chrome/Firefox here, unlike
+    // `fireEvent.click` which alone does NOT dispatch a focus event) — so this reproduces the case
+    // where `.metric-info:focus-within .metric-info-pop` (components.css) would otherwise keep the
+    // popover visible after `is-open` is removed. Assert real visibility (jsdom computed style via
+    // the class list this codebase's CSS keys off), not just the `is-open` class.
+    const { container, getByRole } = render(<MetricInfo title="Title" summary="Summary" />);
+    const root = container.querySelector('.metric-info') as HTMLElement;
+    const button = getByRole('button');
+
+    fireEvent.click(button);
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    expect(root.className).toContain('is-open');
+
+    fireEvent.click(button);
+    expect(root.className).not.toContain('is-open');
+    // The regression: without an explicit blur on close, focus stays on `button` here, which would
+    // keep `:focus-within` (and therefore visibility) active despite `is-open` being gone.
+    expect(document.activeElement).not.toBe(button);
+    expect(document.activeElement).not.toBe(root.querySelector('.metric-info-btn'));
+  });
+
   it('closes a hover-opened popover on Escape', () => {
     const { container } = render(<MetricInfo title="Title" summary="Summary" />);
     const root = container.querySelector('.metric-info') as HTMLElement;

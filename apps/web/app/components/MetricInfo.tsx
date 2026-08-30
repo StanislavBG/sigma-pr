@@ -139,7 +139,16 @@ export function MetricInfo({
         type="button"
         className="metric-info-btn"
         aria-label={aria}
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => {
+          // Clicking a <button> gives it focus (Chrome/Firefox), which keeps CSS
+          // `.metric-info:focus-within .metric-info-pop` active even after `is-open` is removed —
+          // the popover would stay visible until focus left some other way. Blur it on the
+          // open->closed transition so :focus-within drops immediately and JS state (`open`)
+          // stays the single source of truth for click-driven visibility.
+          const willBeOpen = !open;
+          setOpen(willBeOpen);
+          if (!willBeOpen) e.currentTarget.blur();
+        }}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       >

@@ -36,3 +36,16 @@ export const CANONICAL_QUERY_PARAMS = new Set([
 // Read but deliberately not response-affecting: excluded from the cache key, still kept in links. None
 // today; declared so a future one isn't silently absent.
 export const INTENTIONALLY_UNKEYED = new Set<string>([]);
+
+// Destination route for each CANONICAL_QUERY_PARAMS entry that sits ahead of the route reading it
+// (see the comment above). Keyed here, not just in a comment, so cache-key.test.ts's drift guard can
+// require every stacked-PR exemption to name an actual destination — a bare or typo'd entry with no
+// route mapping fails the guard instead of being silently masked by EXPECTED_STALE_PLANNED_PARAMS.
+export const PLANNED_PARAM_ROUTES: Record<string, string> = {
+  a: '/compare',
+  b: '/compare',
+  by: '/overruns',
+  cohort: '/price-anomaly',
+  cpv: '/contracts',
+  metric: '/compare',
+};
