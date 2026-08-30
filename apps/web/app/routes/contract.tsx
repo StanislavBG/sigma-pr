@@ -1,7 +1,16 @@
 import { Link, useMatches } from 'react-router';
-import { count, longDate, money, moneyBare, plural, signedMoney, signedPct } from '@sigma/shared';
+import {
+  count,
+  isNaturalPersonProfileName,
+  longDate,
+  money,
+  moneyBare,
+  plural,
+  signedMoney,
+  signedPct,
+} from '@sigma/shared';
 import { contractIdFromSlug, contractSlug, getContract, getDb } from '@sigma/db';
-import type { ContractDetail } from '@sigma/api-contract';
+import type { CohortBand, ContractDetail } from '@sigma/api-contract';
 import type { Route } from './+types/contract';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { PageHeader } from '../components/PageHeader';
@@ -73,7 +82,7 @@ function AnnexDescription({ text }: { text: string | null }) {
 
 export function meta({ data, params, matches }: Route.MetaArgs) {
   const c = data?.contract;
-  return seoMeta({
+  const tags = seoMeta({
     matches,
     path: `/contracts/${contractSlug(contractIdFromSlug(params.id))}`,
     title: `${c?.subject ?? 'Договор'} — СИГМА`,
@@ -81,6 +90,15 @@ export function meta({ data, params, matches }: Route.MetaArgs) {
       ? `Договор по УНП ${c.unp} между ${c.authority.name} и ${c.bidder.displayName}.`
       : '',
   });
+  // GDPR/ЗЗЛД (#219 review): when the bidder is a sole-trader (ЕТ) / natural person, keep this contract
+  // page — which carries the „Сигнали за риск" box — out of search indexes, mirroring the noindex on
+  // sole-trader company profiles (company.tsx) and their exclusion from the sitemap. The contract stays
+  // fully public on the site; only search-engine amplification of a named individual + risk label is
+  // avoided.
+  if (c && isNaturalPersonProfileName(c.bidder.displayName)) {
+    tags.push({ name: 'robots', content: 'noindex' });
+  }
+  return tags;
 }
 
 export function headers() {
@@ -94,12 +112,26 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   return { contract };
 }
 
+// Coarse cohort bands only (never a fake-precise "топ 4.7%") - @sigma/db cohortBand only claims a
+// fine band when the cohort is large enough and its percentiles are distinct (see cohort.ts).
+const COHORT_BAND_LABELS: Record<CohortBand, string> = {
+  top1: 'в най-горния 1% по стойност',
+  top5: 'в топ 5% по стойност',
+  top10: 'в топ 10% по стойност',
+  top25: 'в топ 25% по стойност',
+  'above-median': 'над медианата',
+  'at-median': 'около медианата',
+  'below-median': 'под медианата',
+  bottom25: 'сред най-ниските 25% по стойност',
+};
+
 const UNVERIFIED_VALUE_LABEL = 'стойност с непотвърдена достоверност';
 
 export default function Contract({ loaderData }: Route.ComponentProps) {
   const matches = useMatches();
   const origin = getRootOrigin(matches) ?? FALLBACK_ORIGIN;
   const c = loaderData.contract;
+  const cohort = c.cohort;
   const v = c.value;
   const crumbId = c.unp || c.contractNumber || c.id;
   // Direct links to the day's raw ЦАИС ЕОП open-data files (storage.eop.bg) this record was
@@ -197,7 +229,13 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
             <div className="vh now">
               <div className="step">Текуща стойност</div>
               <strong className="num">{v.currentEur != null ? money(v.currentEur) : '—'}</strong>
-              {v.suspect && <div className="sub suspect">{UNVERIFIED_VALUE_LABEL}</div>}
+              {v.currentValueDoubled ? (
+                <div className="sub suspect">
+                  стойността изглежда двойно отчетена и не се показва
+                </div>
+              ) : (
+                v.suspect && <div className="sub suspect">{UNVERIFIED_VALUE_LABEL}</div>
+              )}
               {v.deltaPct != null && (
                 <div className="delta">{signedPct(v.deltaPct)} спрямо сключване</div>
               )}
@@ -205,8 +243,10 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
           </div>
           {v.suspect && (
             <p className="small muted">
-              Показана е публикуваната стойност от източника, без СИГМА да я коригира. Виж{' '}
-              <Link to="/methodology">методология</Link>.
+              {v.currentValueDoubled
+                ? 'Текущата стойност изглежда двойно отчетена в източника и затова не се показва. '
+                : 'Показана е публикуваната стойност от източника, без СИГМА да я коригира. '}
+              Виж <Link to="/methodology">методология</Link>.
             </p>
           )}
           {c.frameworkAwards != null && (
@@ -242,11 +282,32 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
                   {c.amendments.map((a, i) => (
                     <tr key={`${a.documentNumber ?? 'amd'}-${i}`}>
                       <td>{a.date ? longDate(a.date) : '—'}</td>
+                      {/* #305 residual: an uncorrectable double-count — the source's value_after is the
+                          untrusted doubled figure, so show „—" and mark the row rather than a number we
+                          can't stand behind. A `restated` row is the opposite: СИГМА corrected the doubled
+                          total from the основание text, so we show the corrected number and flag that we
+                          rewrote it. */}
                       <td className="money">
-                        {a.valueAfterEur != null ? moneyBare(a.valueAfterEur) : '—'}
+                        {a.suspect ? (
+                          <>
+                            — <Chip>непотвърден тотал</Chip>
+                          </>
+                        ) : a.valueAfterEur != null ? (
+                          <>
+                            {moneyBare(a.valueAfterEur)}
+                            {a.restated && (
+                              <>
+                                {' '}
+                                <Chip>коригиран тотал</Chip>
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="money">
-                        {a.deltaEur != null ? signedMoney(a.deltaEur) : '—'}
+                        {!a.suspect && a.deltaEur != null ? signedMoney(a.deltaEur) : '—'}
                       </td>
                       <td className="annex-desc-cell">
                         <AnnexDescription text={a.description} />
@@ -362,6 +423,34 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
         </Section>
 
         <RiskIndicators contract={c} />
+
+        {cohort && (
+          <Section
+            id="similar"
+            title="Подобни договори"
+            hint="Стойността спрямо всички договори с чиста стойност в същия CPV сектор в базата."
+          >
+            <p>
+              <strong>{money(cohort.amountEur)}</strong> е{' '}
+              <strong>{COHORT_BAND_LABELS[cohort.band]}</strong> сред{' '}
+              {count(cohort.stats.pricedContracts)}{' '}
+              {plural(cohort.stats.pricedContracts, 'договор', 'договора')} в сектор „
+              {c.sector?.short ?? `CPV ${cohort.stats.division}`}“ (CPV {cohort.stats.division}).
+              Медианата за сектора е <strong>{money(cohort.stats.medianEur)}</strong>.
+            </p>
+            <p className="small muted">
+              Приблизителна позиция по предизчислени персентили на сектора, включващи и самия този
+              договор. Сравнението дава контекст на мащаба и не е оценка за нередност - голяма
+              поръчка може да е напълно обоснована. Използва различен метод от отчета за аномалии,
+              затова числата може леко да се разминават.
+            </p>
+            <p className="small muted">
+              <Link to={`/contracts?sector=${cohort.stats.division}&sort=value-desc`}>
+                Виж договорите в сектора →
+              </Link>
+            </p>
+          </Section>
+        )}
 
         <Section id="facts" title="Подробности">
           <FactsList
