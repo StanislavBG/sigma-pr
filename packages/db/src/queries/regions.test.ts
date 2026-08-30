@@ -104,7 +104,10 @@ const BENEFICIARY_ROWS = [
   },
 ];
 
-function fakeBeneficiaryDb(capture?: { sql?: string; params?: unknown[] }): D1Database {
+function fakeBeneficiaryDb(
+  capture?: { sql?: string; params?: unknown[] },
+  rows: unknown[] = BENEFICIARY_ROWS,
+): D1Database {
   return {
     prepare(sql: string) {
       if (capture) capture.sql = sql;
@@ -114,7 +117,7 @@ function fakeBeneficiaryDb(capture?: { sql?: string; params?: unknown[] }): D1Da
           return this;
         },
         async all<T>() {
-          return { results: BENEFICIARY_ROWS as T[] };
+          return { results: rows as T[] };
         },
       };
     },
@@ -128,6 +131,23 @@ describe('getRegionTopBeneficiaries', () => {
     expect(plovdiv).toHaveLength(3);
     expect(plovdiv?.map((b) => b.valueEur)).toEqual([3000, 2000, 1000]);
     expect(plovdiv?.[0]).toMatchObject({ bidderId: 'b1', name: 'Alpha OOD', valueEur: 3000 });
+  });
+
+  it('orders by value descending even when the DB returns rows out of order (no ORDER BY to rely on)', async () => {
+    // GROUP BY + a window function do not guarantee output row order, so the query itself carries
+    // `ORDER BY region, rn` — this only proves the effect: a shuffled/interleaved result set from the
+    // fake DB must still come out ranked, not merely "contains the right members" (the prior test's
+    // fixture happened to already be sorted, which would pass even with a missing ORDER BY).
+    const shuffled = [
+      BENEFICIARY_ROWS[1], // Пловдив b2, 2000
+      BENEFICIARY_ROWS[4], // Бургас b5, 200
+      BENEFICIARY_ROWS[0], // Пловдив b1, 3000
+      BENEFICIARY_ROWS[3], // Бургас b4, 800
+      BENEFICIARY_ROWS[2], // Пловдив b3, 1000
+    ];
+    const map = await getRegionTopBeneficiaries(fakeBeneficiaryDb(undefined, shuffled), {});
+    expect(map.get('BG421')?.map((b) => b.bidderId)).toEqual(['b1', 'b2', 'b3']);
+    expect(map.get('BG341')?.map((b) => b.bidderId)).toEqual(['b4', 'b5']);
   });
 
   it('computes each bidder share against the region total across ALL bidders, not just the top 3', async () => {

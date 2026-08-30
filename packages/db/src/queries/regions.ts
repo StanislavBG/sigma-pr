@@ -101,7 +101,7 @@ export async function getRegionTopBeneficiaries(
               JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
          WHERE ${where.join(' AND ')}
          GROUP BY a.region, c.bidder_id
-       ) WHERE rn <= 3`,
+       ) WHERE rn <= 3 ORDER BY region, rn`,
     )
     .bind(...params)
     .all<TopBeneficiaryRow>();
@@ -119,6 +119,10 @@ export async function getRegionTopBeneficiaries(
     });
     byNuts3.set(region.nuts3, list);
   }
+  // Belt-and-suspenders alongside the SQL's `ORDER BY region, rn`: GROUP BY + a window function do
+  // not guarantee D1/SQLite's row order, and this list is rendered as a ranked "top 3" — never trust
+  // result order for that, sort explicitly by value descending.
+  for (const list of byNuts3.values()) list.sort((a, b) => b.valueEur - a.valueEur);
   return byNuts3;
 }
 
