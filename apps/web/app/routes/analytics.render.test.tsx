@@ -10,7 +10,9 @@ import Analytics, { headers, meta } from './analytics';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-function loaderData(opaque: { latestShare: number; latestYear: string; ppChange: number; firstYear: string } | null) {
+function loaderData(
+  opaque: { latestShare: number; latestYear: string; ppChange: number; firstYear: string } | null,
+) {
   return {
     overruns: { totalOverrunEur: 1_000_000, count: 10, medianPct: 0.3 },
     flows: { authorities: 42, pairs: 100 },
@@ -57,7 +59,9 @@ describe('/analytics route — render', () => {
   });
 
   it('renders all five analysis cards with their headline stats', async () => {
-    await renderAnalytics(loaderData({ latestShare: 0.22, latestYear: '2024', ppChange: 0.05, firstYear: '2018' }));
+    await renderAnalytics(
+      loaderData({ latestShare: 0.22, latestYear: '2024', ppChange: 0.05, firstYear: '2018' }),
+    );
     expect(container.querySelectorAll('.az-card').length).toBe(5);
     expect(text()).toContain('Раздуване');
     expect(text()).toContain('Потоци');

@@ -57,12 +57,14 @@ const SECTOR_ROW: OverrunSectorRow = {
   contracts: 5,
 };
 
-function loaderData(over: {
-  rows?: OverrunRow[];
-  byAuthority?: OverrunAuthorityRow[];
-  bySector?: OverrunSectorRow[];
-  by?: 'absolute' | 'percent';
-} = {}) {
+function loaderData(
+  over: {
+    rows?: OverrunRow[];
+    byAuthority?: OverrunAuthorityRow[];
+    bySector?: OverrunSectorRow[];
+    by?: 'absolute' | 'percent';
+  } = {},
+) {
   const rows = over.rows ?? [row(), row({ contractId: 'c2', contractSlug: 'c2-slug' })];
   return {
     data: {

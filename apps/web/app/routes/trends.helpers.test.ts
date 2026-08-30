@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  axisLabel,
-  jitter,
-  logMax,
-  makeLx,
-  multText,
-  pick,
-  relLabel,
-} from './trends';
+import { axisLabel, jitter, logMax, makeLx, multText, pick, relLabel } from './trends';
 
 describe('pick', () => {
   it('accepts an allowed raw value', () => {

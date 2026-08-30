@@ -11,13 +11,7 @@ const q = vi.hoisted(() => ({
 }));
 vi.mock('@sigma/db', () => q);
 
-import {
-  cpvText,
-  financingText,
-  inspectorFields,
-  loader,
-  termText,
-} from './overruns';
+import { cpvText, financingText, inspectorFields, loader, termText } from './overruns';
 
 const DB = {};
 const context = { cloudflare: { env: { DB } } };

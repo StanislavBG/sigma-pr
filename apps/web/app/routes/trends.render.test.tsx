@@ -51,9 +51,7 @@ function baseLoaderData(): LoaderData {
         { period: '2022-Q1', valueEur: 1_000_000, contracts: 10, partial: false },
         { period: '2022-Q2', valueEur: 1_500_000, contracts: 12, partial: false },
       ],
-      years: [
-        { year: '2022', valueEur: 2_500_000, contracts: 22, yoyPct: 0.1, partial: false },
-      ],
+      years: [{ year: '2022', valueEur: 2_500_000, contracts: 22, yoyPct: 0.1, partial: false }],
       sectors: [],
       totalValueEur: 2_500_000,
       coverage: { dated: 22, total: 22, pct: 1 },
