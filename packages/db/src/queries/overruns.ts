@@ -289,6 +289,11 @@ function mapOverrunRows(raw: RawRow[]): OverrunRow[] {
         subject: r.subject,
         authorityName: cleanName(r.authority_name),
         authoritySlug: authoritySlug(r.authority_id),
+        // Reusing authoritySlug is intentional, NOT a bug (unlike bidderEik it has no dedicated
+        // normalized column): authorities.id is unconditionally 'auth:' || ЕИК (0000_init.sql), so
+        // authoritySlug (which just strips the 'auth:' prefix) always IS the ЕИК. Bidders need the
+        // separate b.eik_normalized column because bidder ids are NOT uniformly EIK-based — companySlug
+        // has an `eik:`-prefixed form and a `name:`-prefixed (base64, no known EIK) form.
         authorityEik: authoritySlug(r.authority_id),
         bidderName: entityName(bidderName, r.bidder_kind),
         bidderSlug: companySlug(r.bidder_id),

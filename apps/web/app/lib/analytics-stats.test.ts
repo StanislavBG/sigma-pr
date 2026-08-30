@@ -126,6 +126,24 @@ describe('estimateYoyGrowth', () => {
     expect(estimateYoyGrowth(year(2023, 100, 50, true))).toEqual({ value: 1, count: 1 });
   });
 
+  it('insufficient data yields a neutral multiplier that formats as 0%/год, never -100% or NaN', () => {
+    const g = estimateYoyGrowth(year(2023, 100, 50, true));
+    expect(g.value).toBe(1); // neutral multiplier, not 0 (which would read as -100%/год below)
+    expect(g.count).toBe(1);
+    expect(Number.isNaN(g.value)).toBe(false);
+    expect(Number.isNaN(g.count)).toBe(false);
+    expect(formatYearlyGrowth(g.value - 1)).toBe('0%/год');
+  });
+
+  it('pins the multiplier→difference contract with formatYearlyGrowth (analytics.tsx passes `growth.value - 1`, never the raw multiplier)', () => {
+    const points = [...year(2021, 100, 50), ...year(2022, 120, 55), ...year(2023, 144, 60.5)];
+    const g = estimateYoyGrowth(points);
+    expect(g.value).toBeCloseTo(1.2, 5); // multiplier: +20%
+    expect(formatYearlyGrowth(g.value - 1)).toBe('+20%/год');
+    // Feeding the raw multiplier straight through (the footgun) would misread as +120%/год.
+    expect(formatYearlyGrowth(g.value)).toBe('+120%/год');
+  });
+
   it('clamps an absurd ratio into the sane band', () => {
     const points = [...year(2021, 1, 1), ...year(2022, 1000, 1000)];
     const g = estimateYoyGrowth(points);

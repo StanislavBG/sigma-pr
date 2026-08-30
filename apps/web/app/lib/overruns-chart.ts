@@ -178,10 +178,13 @@ export function scatterGeometry(
     return { y: round1(yOf(value)), value };
   });
 
-  const xticks: ScatterTick[] = chooseXTicks(loPct, hiPct).map((pctPercent) => ({
-    x: round1(xOf(pctPercent)),
-    pctPercent,
-  }));
+  const xticks: ScatterTick[] = chooseXTicks(loPct, hiPct).map((raw) => {
+    // A degenerate/narrow range brackets with the nearest ladder stops outside [loPct, hiPct] (see
+    // chooseXTicks); clamp the LABEL to match, so the axis never shows a value (e.g. „+10%") absent
+    // from the data even though xOf() already clamps the tick's on-screen position.
+    const pctPercent = Math.max(loPct, Math.min(hiPct, raw));
+    return { x: round1(xOf(pctPercent)), pctPercent };
+  });
 
   return { ...base, points, grid, xticks };
 }

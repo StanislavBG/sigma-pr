@@ -396,4 +396,13 @@ describe('withParams', () => {
     // dropped from every generated link.
     expect(PARAM_ORDER.filter((key) => !CANONICAL_QUERY_PARAMS.has(key))).toEqual([]);
   });
+
+  it('round-trips the reserved `g` param like any other canonical param (#144, not yet read anywhere)', () => {
+    // `g` sits in both PARAM_ORDER and CANONICAL_QUERY_PARAMS (never just one) — withParams must
+    // neither drop it as unknown nor silently lose it to override handling.
+    expect(CANONICAL_QUERY_PARAMS.has('g')).toBe(true);
+    expect(PARAM_ORDER.includes('g')).toBe(true);
+    expect(withParams(sp('sort=value-desc&g=1'), {})).toBe('?g=1&sort=value-desc');
+    expect(withParams(sp('sort=value-desc'), { g: '1' })).toBe('?g=1&sort=value-desc');
+  });
 });

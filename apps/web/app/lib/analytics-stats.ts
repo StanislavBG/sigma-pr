@@ -36,9 +36,12 @@ export function growthMultiple(medianPct: number | null | undefined): string {
   return formatGrowthFactor(medianPct);
 }
 
-// „+18%/год" — yearly growth as a signed integer percentage with the per-year suffix. The input ratio
-// is the canonical /trends growth estimate (3-year trailing median, clamped) so the landing card and
-// the /trends header always read the same figure.
+// „+18%/год" — yearly growth as a signed integer percentage with the per-year suffix. `ratio` is a
+// DIFFERENCE ratio (0.18 → „+18%/год", 0 → „0%/год"), NOT the growth MULTIPLIER `estimateYoyGrowth`
+// returns (1.18 → +18%). Callers must pass `growth.value - 1`, never `growth.value` directly — see
+// analytics.tsx's loader, which does exactly that before this is called. The value is the canonical
+// /trends growth estimate (3-year trailing median, clamped) so the landing card and the /trends header
+// always read the same figure.
 export function formatYearlyGrowth(ratio: number | null | undefined): string {
   if (ratio == null || !Number.isFinite(ratio)) return EM_DASH;
   return `${signedPct(ratio, 0)}/год`;
@@ -117,6 +120,8 @@ export function formatPpChange(deltaRatio: number | null | undefined): string {
 // ===== YoY growth estimate for the „Тренд" card =====
 // Ported from the retired /trends seasonal forecast so /analytics owns the derivation it renders.
 
+// A MULTIPLIER, not a difference ratio: 1.0 = flat, 1.2 = +20%/yr, 0.9 = −10%/yr. Never feed `value`
+// or `count` straight into `formatYearlyGrowth` — it expects the difference ratio (`value - 1`).
 export interface GrowthFactors {
   value: number; // YoY multiplier for spend (1.0 = flat)
   count: number; // YoY multiplier for contract count

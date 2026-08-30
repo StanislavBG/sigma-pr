@@ -587,7 +587,10 @@ tbody td,
    Static layout/typography chrome for /trends (routes/trends.tsx + components/TrendComboChart.tsx),
    moved out of inline `style=` to keep the route CSP-clean (style-src; see docs/review-accessibility).
    Only genuinely JS-computed values (bar widths, active-state colours, SVG fill/stroke var()s) stay
-   inline. The mono face mirrors the design mock's IBM Plex Mono, falling back to the app token. */
+   inline. The mono face mirrors the design mock's IBM Plex Mono: every use here is plain
+   `var(--font-mono-plex)` (no local `, var(--font-mono)` fallback arg) because the fallback to the
+   app token is already baked into the token itself — see tokens.css's
+   `--font-mono-plex: 'IBM Plex Mono', var(--font-mono)` — so it does not need repeating per use site. */
 /* vertical layout (design): a single column — full-width chart → year table → contracts grid */
 .trend-grid {
   display: flex;

@@ -103,4 +103,19 @@ describe('scatterGeometry', () => {
       expect(t.x).toBeLessThanOrEqual(g.axis.right + 0.1);
     }
   });
+
+  it('clamps tick LABELS to the real data range on a degenerate/narrow range (no ladder stop falls in range)', () => {
+    // All rows sit at pct=0.3 (30%), a value with no exact TICK_LADDER stop — chooseXTicks brackets
+    // it with the nearest stops (25 and 50), both outside [30, 30]; the label must not claim +25%/+50%
+    // exist in the data when only +30% does.
+    const degenerate: ScatterDatum[] = [
+      { id: 'x', pct: 0.3, deltaEur: 1_000_000, annexCount: 1, rank: 1 },
+      { id: 'y', pct: 0.3, deltaEur: 2_000_000, annexCount: 2, rank: 2 },
+    ];
+    const g = scatterGeometry(degenerate);
+    for (const t of g.xticks) {
+      expect(t.pctPercent).toBeGreaterThanOrEqual(30);
+      expect(t.pctPercent).toBeLessThanOrEqual(30);
+    }
+  });
 });
