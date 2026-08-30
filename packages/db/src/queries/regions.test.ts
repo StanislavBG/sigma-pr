@@ -63,7 +63,7 @@ describe('getRegionalSpending', () => {
     // The choropleth card labels „Дял от всички области/райони" against `totalValueEur` in both modes;
     // that is only truthful if every oblast rolls into exactly one район, i.e. the two sums are equal.
     // If macroRegions ever stops being a pure roll-up of regions, this guard fails before it ships.
-    const { regions, macroRegions, totalValueEur } = await getRegionalSpending(fakeDb(), {});
+    const { regions, macroRegions, totalValueEur } = await getRegionalSpending(fake().db, {});
     const sumRegions = regions.reduce((s, r) => s + r.valueEur, 0);
     const sumMacros = macroRegions.reduce((s, m) => s + m.valueEur, 0);
     expect(sumRegions).toBe(sumMacros);

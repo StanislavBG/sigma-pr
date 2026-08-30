@@ -293,20 +293,20 @@ describe('getSpendingTrend', () => {
   });
 
   it('ignores malformed CPV groups instead of joining tenders on garbage', async () => {
-    const captured: string[] = [];
-    await getSpendingTrend(fakeDb(captured), { cpvGroups: ['4523', 'abcde', "45'--"] });
-    const series = captured.find((q) => q.includes('GROUP BY period'))!;
+    const captured = fake();
+    await getSpendingTrend(captured.db, { cpvGroups: ['4523', 'abcde', "45'--"] });
+    const series = captured.sql.find((q) => q.includes('GROUP BY period'))!;
     expect(series).not.toContain('JOIN tenders');
     expect(series).not.toContain('t.cpv_code >= ?');
   });
 
   it('folds monthly rows into a continuous quarterly series (queried at month grain)', async () => {
-    const sqls: string[] = [];
-    const { points, granularity } = await getSpendingTrend(fakeDb(sqls), {
+    const captured = fake();
+    const { points, granularity } = await getSpendingTrend(captured.db, {
       granularity: 'quarter',
     });
     // Quarters come from the monthly substr, not a SQL quarter expression.
-    expect(sqls.some((s) => s.includes('substr(c.signed_at, 1, 7)'))).toBe(true);
+    expect(captured.sql.some((s) => s.includes('substr(c.signed_at, 1, 7)'))).toBe(true);
     expect(granularity).toBe('quarter');
     expect(points.map((p) => p.period)).toEqual([
       '2022-Q1',
@@ -322,7 +322,7 @@ describe('getSpendingTrend', () => {
   });
 
   it('with includeCurrent, marks the as_of quarter partial', async () => {
-    const { points, years } = await getSpendingTrend(fakeDb(undefined, '2023-01-15'), {
+    const { points, years } = await getSpendingTrend(fake('2023-01-15').db, {
       granularity: 'quarter',
       includeCurrent: true,
     });
@@ -354,6 +354,11 @@ describe('getSpendingTrend', () => {
 });
 
 // ── Contracts overview queries ───────────────────────────────────────────────────────────────────
+
+interface QueryCall {
+  sql: string;
+  args: unknown[];
+}
 
 // Fake D1 that routes each prepared statement by SQL shape and records { sql, args } for assertions.
 function overviewDb(handlers: {
