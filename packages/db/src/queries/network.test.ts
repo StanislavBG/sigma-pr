@@ -79,106 +79,59 @@ const COMP_COUNTERPARTIES = [
 // COUNT(*) returns no row (D1 error) instead of the usual { n: 42 } — used to assert the fallback
 // stays `null` ("unknown") rather than masking the failure as the HOP1 draw cap.
 function fakeDbCountFails(): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          if (sql.includes('ORDER BY spent_eur')) return { results: PICKER_AUTH as T[] };
-          if (sql.includes('FROM company_totals')) return { results: PICKER_COMP as T[] };
-          if (sql.includes('FROM flow_pairs WHERE authority_id = ?'))
-            return { results: HOP1 as T[] };
-          if (sql.includes('WHERE bidder_id IN')) return { results: HOP2 as T[] };
-          return { results: [] as T[] };
-        },
-        async first<T>() {
-          if (sql.includes('FROM authority_totals WHERE authority_id')) return CENTER_AUTH as T;
-          if (sql.includes('COUNT(*)')) return null as T;
-          return null as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+  return fakeD1(
+    [
+      { when: 'ORDER BY spent_eur', all: PICKER_AUTH },
+      { when: 'FROM company_totals', all: PICKER_COMP },
+      { when: 'FROM flow_pairs WHERE authority_id = ?', all: HOP1 },
+      { when: 'WHERE bidder_id IN', all: HOP2 },
+      { when: 'FROM authority_totals WHERE authority_id', first: CENTER_AUTH },
+      { when: 'COUNT(*)', first: null },
+    ],
+    { onUnmatched: 'empty' },
+  ).db;
 }
 
 function fakeDb(): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          if (sql.includes('ORDER BY spent_eur')) return { results: PICKER_AUTH as T[] };
-          if (sql.includes('FROM company_totals')) return { results: PICKER_COMP as T[] };
-          // The counterparties keyset query tiebreaks on the neighbour id column: for an authority
-          // centre that is "won_eur DESC, bidder_id"; for a COMPANY centre it is "won_eur DESC,
-          // authority_id" (the other ORDER BY the reviewer flagged as untested). The hop-1 graph read
-          // orders by "won_eur DESC LIMIT" (no id tiebreak).
-          if (sql.includes('won_eur DESC, authority_id'))
-            return { results: COMP_COUNTERPARTIES as T[] };
-          if (sql.includes('won_eur DESC, bidder_id')) return { results: HOP1 as T[] };
-          if (sql.includes('FROM flow_pairs WHERE authority_id = ?'))
-            return { results: HOP1 as T[] };
-          if (sql.includes('WHERE bidder_id IN')) return { results: HOP2 as T[] };
-          return { results: [] as T[] };
-        },
-        async first<T>() {
-          if (sql.includes('FROM authority_totals WHERE authority_id')) return CENTER_AUTH as T;
-          if (sql.includes('COUNT(*)')) return { n: 42 } as T;
-          return null as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+  return fakeD1(
+    [
+      { when: 'ORDER BY spent_eur', all: PICKER_AUTH },
+      { when: 'FROM company_totals', all: PICKER_COMP },
+      // The counterparties keyset query tiebreaks on the neighbour id column: for an authority
+      // centre that is "won_eur DESC, bidder_id"; for a COMPANY centre it is "won_eur DESC,
+      // authority_id" (the other ORDER BY the reviewer flagged as untested). The hop-1 graph read
+      // orders by "won_eur DESC LIMIT" (no id tiebreak).
+      { when: 'won_eur DESC, authority_id', all: COMP_COUNTERPARTIES },
+      { when: 'won_eur DESC, bidder_id', all: HOP1 },
+      { when: 'FROM flow_pairs WHERE authority_id = ?', all: HOP1 },
+      { when: 'WHERE bidder_id IN', all: HOP2 },
+      { when: 'FROM authority_totals WHERE authority_id', first: CENTER_AUTH },
+      { when: 'COUNT(*)', first: { n: 42 } },
+    ],
+    { onUnmatched: 'empty' },
+  ).db;
 }
 
 // The centre-load fails (no name in authority_totals AND no HOP1 sample to fall back to) while
 // COUNT(*) still succeeds with a real, non-zero total — used to assert the early-exit at the
 // `!center` branch preserves that already-computed total instead of fabricating 0.
 function fakeDbCenterLoadFails(): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          if (sql.includes('ORDER BY spent_eur')) return { results: PICKER_AUTH as T[] };
-          if (sql.includes('FROM company_totals')) return { results: PICKER_COMP as T[] };
-          if (sql.includes('FROM flow_pairs WHERE authority_id = ?')) return { results: [] as T[] };
-          return { results: [] as T[] };
-        },
-        async first<T>() {
-          if (sql.includes('FROM authority_totals WHERE authority_id')) return null as T;
-          if (sql.includes('COUNT(*)')) return { n: 7 } as T;
-          return null as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+  return fakeD1(
+    [
+      { when: 'ORDER BY spent_eur', all: PICKER_AUTH },
+      { when: 'FROM company_totals', all: PICKER_COMP },
+      { when: 'FROM flow_pairs WHERE authority_id = ?', all: [] },
+      { when: 'FROM authority_totals WHERE authority_id', first: null },
+      { when: 'COUNT(*)', first: { n: 7 } },
+    ],
+    { onUnmatched: 'empty' },
+  ).db;
 }
 
 // No authority has any flows at all: the `!top` early-exit before a centre is even chosen. This is
 // a real, known zero (not a centre-load failure) and must stay the literal `0`.
 function fakeDbNoAuthorities(): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          return { results: [] as T[] };
-        },
-        async first<T>() {
-          return null as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+  return fakeD1([{ when: [], all: [], first: null }]).db;
 }
 
 function fake(): FakeD1 {
