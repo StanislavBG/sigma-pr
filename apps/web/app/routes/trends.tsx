@@ -107,7 +107,15 @@ function multText(mult: number): string {
   return `×${(Math.round(mult * 10) / 10).toString().replace('.', ',')}`;
 }
 
-function relLabel(valueEur: number, medianEur: number): { text: string; cls: string } {
+export function relLabel(
+  valueEur: number,
+  medianEur: number,
+): { text: string; cls: string } | null {
+  // medianEur === 0 is a real case (a CPV group whose contracts carry zero/missing value) — guard
+  // it before dividing so it can never render a nonsensical "×Infinity типичното" (valueEur > 0)
+  // or "×NaN типичното" (valueEur === 0) label, and so Infinity can't spuriously pass the
+  // 'ov-rel-hi' >= 1.3 branch.
+  if (!(medianEur > 0)) return null;
   const mult = valueEur / medianEur;
   if (mult >= 1.3) return { text: `${multText(mult)} типичното`, cls: 'ov-rel-hi' };
   if (mult <= 0.75) return { text: 'под типичното', cls: 'ov-rel-lo' };

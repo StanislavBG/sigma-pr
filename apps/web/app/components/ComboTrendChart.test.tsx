@@ -40,7 +40,10 @@ describe('ComboTrendChart', () => {
     act(() => {
       root.render(<ComboTrendChart points={points} granularity="month" />);
     });
-    expect(comboLinePartial()).not.toBeNull();
+    // Not just present — it must carry a real, drawable `d` (a "MoveTo ... LineTo ..." pair),
+    // not the empty `d=""` that solidEnd === -1 used to produce for a partial at index 0.
+    const d = comboLinePartial()?.getAttribute('d');
+    expect(d).toMatch(/^M[\d.]+ [\d.]+ L[\d.]+ [\d.]+$/);
   });
 
   it('detects a partial period at the last index (the normal case)', () => {

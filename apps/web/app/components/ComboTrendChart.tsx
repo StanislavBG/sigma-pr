@@ -61,7 +61,15 @@ export function ComboTrendChart({
     .slice(0, solidEnd + 1)
     .map((_p, i) => `${i ? 'L' : 'M'}${xy(i)}`)
     .join(' ');
-  const dashed = hasPartial && solidEnd >= 0 ? `M${xy(solidEnd)} L${xy(partialIdx)}` : '';
+  // solidEnd < 0 only happens when partialIdx === 0 (no prior solid point to anchor the dashed
+  // segment on) — draw it from the partial point forward to the next one instead of emitting an
+  // empty, unrenderable `d=""` (points.length >= 2 is guaranteed by the early return above, so
+  // partialIdx + 1 is always in range here).
+  const dashed = !hasPartial
+    ? ''
+    : solidEnd >= 0
+      ? `M${xy(solidEnd)} L${xy(partialIdx)}`
+      : `M${xy(partialIdx)} L${xy(partialIdx + 1)}`;
 
   const ticks = yearAxisTicks(points, granularity);
 
