@@ -7,7 +7,7 @@ import type { EntityKind, OwnershipKind, SearchHit, SearchResults } from '@sigma
 import { cleanName, entityName, parseConsortiumMembers, searchTokens } from '@sigma/shared';
 import { hrefForEntity } from './identity';
 
-export type SearchKind = 'authority' | 'company' | 'contract';
+export type SearchKind = 'official' | 'authority' | 'company' | 'contract';
 
 // The tokenizer and its caps live in @sigma/shared so the FTS query builder and the search UI agree
 // on what counts as searchable. Re-exported here for existing @sigma/db consumers.
@@ -20,6 +20,16 @@ const GROUPS: {
   limit: number;
   path: string;
 }[] = [
+  // Свързани лица (declared conflict-of-interest officials). Placed first here, but only actually LEADS the
+  // results when it's the strongest match — see the relevance gate in search(). The minister's ask: a name
+  // search must surface the person's declared-conflict profile.
+  {
+    kind: 'official',
+    label: 'Свързани лица',
+    amountLabel: 'по договори',
+    limit: 6,
+    path: '/conflicts',
+  },
   {
     kind: 'authority',
     label: 'Институции',
@@ -96,6 +106,8 @@ interface HitRow {
   entity_kind: EntityKind | null;
   ownership_kind: OwnershipKind | null;
   eik_valid: number | null;
+  has_conflict: number | null; // 1 when a company row has a published свързани-лица link — self or family (badge)
+  rank: number; // dampened rank (see RANK_EXPR), lower = better; the group's top row gives its best rank for the gate
 }
 
 // FTS5's default bm25() rewards raw term frequency: a title that repeats the query terms several
@@ -134,8 +146,30 @@ export function assertLimitsWithinCandidates(
 }
 assertLimitsWithinCandidates(GROUPS, CANDIDATES);
 
-export const SEARCH_HITS_SQL = `SELECT h.ref, h.title, h.ident, h.subtitle, h.amount,
-       ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid
+// One group's ranked hits, re-ranked (see RANK_EXPR) over the top CANDIDATES rows drawn via the optimized FTS5
+// rank path (see the CANDIDATES comment above). Company rows additionally carry a свързани-лица flag: a LEFT
+// JOIN against the published conflict links keyed on the winner's ЕИК (= the company row's `ident`). Published,
+// self OR family stake, backed by a Trade Register evidence SEAL, AND the winner must have LIVE contracts (the
+// same read-time N9 gate LINK_SELECT applies), so search flags exactly the companies the /conflicts surface
+// shows and never one whose page would 404. A family-only winner badges — the /conflicts page already publishes
+// that link by name, so the badge discloses nothing the surface doesn't. Binds: kind, match, limit.
+//
+// The seal EXISTS clause is the same one SURFACED_OWNERSHIP applies (related-persons.ts), and it belongs
+// here for a sharper reason than symmetry: search is the WIDER surface. A published row whose seal is
+// missing or withholding — a legacy row, a partial run, a loader bug — would badge a свързани-лица claim
+// about a named official to every searcher, while the page behind the badge correctly showed nothing.
+// Four copies of this predicate now exist (here, SURFACED_OWNERSHIP, precompute.sql, refresh-slice.sql);
+// related-persons-sql.test.ts pins them to each other.
+// Exported so search-sql.test runs the EXACT SQL (not a copy).
+// Built with or without the conflict join. The join reads BOTH свързани-лица migrations — interest_links
+// (0003) and interest_link_evidence (0006) — and on an env where either is unapplied it would make the
+// ENTIRE search 500 with „no such table". search() detects both tables once per request and picks the
+// no-conflict variant when either is absent, so search degrades to has_conflict=0 rather than breaking
+// (ADR-0031 robustness ask).
+const hitsSql = (withConflict: boolean): string => `SELECT h.ref, h.title, h.ident, h.subtitle, h.amount,
+       ${RANK_EXPR} AS rank,
+       ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid,
+       ${withConflict ? '(cf.eik IS NOT NULL)' : '0'} AS has_conflict
 FROM (
   SELECT search_index.ref AS ref, search_index.title AS title, search_index.ident AS ident,
          search_index.subtitle AS subtitle, search_index.amount AS amount,
@@ -146,7 +180,22 @@ FROM (
 ) h
 LEFT JOIN company_totals ct
   ON h.kind = 'company' AND ct.bidder_id = h.ref
-ORDER BY ${RANK_EXPR}, h.ref LIMIT ?`;
+${
+  withConflict
+    ? `LEFT JOIN (
+  SELECT DISTINCT il.eik FROM interest_links il
+  WHERE il.status = 'published' AND il.interest_class IN ('private_ownership', 'family_ownership')
+    AND EXISTS (SELECT 1 FROM interest_link_evidence e
+                WHERE e.link_key = il.link_key AND e.evidence_kind IN ('document','confirmed'))
+    AND EXISTS (SELECT 1 FROM contracts cc JOIN bidders bb ON bb.id = cc.bidder_id
+                WHERE bb.eik_normalized = il.eik)
+) cf ON h.kind = 'company' AND cf.eik = h.ident`
+    : ''
+}
+ORDER BY rank, h.ref LIMIT ?`;
+
+export const SEARCH_HITS_SQL = hitsSql(true);
+export const SEARCH_HITS_SQL_NO_CONFLICT = hitsSql(false);
 
 export async function search(db: D1Database, rawQuery: string): Promise<SearchResults> {
   const query = (rawQuery ?? '').trim();
@@ -165,14 +214,39 @@ export async function search(db: D1Database, rawQuery: string): Promise<SearchRe
     .all<{ kind: SearchKind; n: number }>();
   const counts = new Map(countRows.results.map((r) => [r.kind, r.n]));
 
-  const groups = await Promise.all(
+  // Pick the hits SQL once: on an env where the свързани-лица migrations are not applied, the conflict join
+  // would 500 the whole search — fall back to the no-conflict variant (has_conflict=0) instead.
+  //
+  // BOTH tables are required, not just interest_links: the join now also reads interest_link_evidence
+  // (0006), so an env with 0003 but not 0006 would break every search on every kind. Requiring both also
+  // gives the right answer on such an env — with no seal table nothing is provably sealed, so nothing
+  // should badge.
+  const hasConflictTable =
+    (
+      await db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('interest_links','interest_link_evidence')",
+        )
+        .first<{ n: number }>()
+    )?.n === 2;
+  const hitsSqlToUse = hasConflictTable ? SEARCH_HITS_SQL : SEARCH_HITS_SQL_NO_CONFLICT;
+
+  const built = await Promise.all(
     GROUPS.map(async (g) => {
       const total = counts.get(g.kind) ?? 0;
-      if (total === 0) return { kind: g.kind, label: g.label, total: 0, hits: [], moreHref: null };
-      const { results } = await db
-        .prepare(SEARCH_HITS_SQL)
-        .bind(g.kind, match, g.limit)
-        .all<HitRow>();
+      if (total === 0) {
+        return {
+          group: {
+            kind: g.kind,
+            label: g.label,
+            total: 0,
+            hits: [] as SearchHit[],
+            moreHref: null,
+          },
+          bestRank: Infinity,
+        };
+      }
+      const { results } = await db.prepare(hitsSqlToUse).bind(g.kind, match, g.limit).all<HitRow>();
       const hits: SearchHit[] = results.map((r) => {
         const href = hrefForEntity(g.kind, r.ref);
         const isCompany = g.kind === 'company';
@@ -188,7 +262,13 @@ export async function search(db: D1Database, rawQuery: string): Promise<SearchRe
           title: isCompany ? entityName(cleanName(r.title), companyKind) : r.title,
           ident: r.ident || null,
           ...(isCompany
-            ? { isConsortium, hasEik, ownershipKind: r.ownership_kind, memberCount }
+            ? {
+                isConsortium,
+                hasEik,
+                ownershipKind: r.ownership_kind,
+                memberCount,
+                hasConflict: r.has_conflict === 1,
+              }
             : {}),
           subtitle: r.subtitle || null,
           amountEur: r.amount,
@@ -196,14 +276,29 @@ export async function search(db: D1Database, rawQuery: string): Promise<SearchRe
         };
       });
       return {
-        kind: g.kind,
-        label: g.label,
-        total,
-        hits,
-        moreHref: total > hits.length ? searchMoreHref(g.kind, query) : null,
+        group: {
+          kind: g.kind,
+          label: g.label,
+          total,
+          hits,
+          moreHref: total > hits.length ? searchMoreHref(g.kind, query) : null,
+        },
+        // Best (lowest dampened rank) in the group = its top row, for the relevance gate below.
+        bestRank: results.length ? results[0]!.rank : Infinity,
       };
     }),
   );
+
+  // Placement (the minister's ask): „Свързани лица" LEADS — but only when it is genuinely the strongest
+  // match, never on an incidental prefix hit. When its best rank ties or beats every other non-empty group
+  // it goes first; otherwise it sinks to last (still shown, just not hijacking the top over a stronger
+  // company/contract match). Empty groups are hidden downstream, so „first when matched, absent otherwise"
+  // falls out for free.
+  const official = built.find((b) => b.group.kind === 'official')!;
+  const rest = built.filter((b) => b.group.kind !== 'official');
+  const bestOther = Math.min(Infinity, ...rest.map((b) => b.bestRank));
+  const officialLeads = official.group.total > 0 && official.bestRank <= bestOther;
+  const groups = (officialLeads ? [official, ...rest] : [...rest, official]).map((b) => b.group);
 
   return { query, groups, empty: groups.every((g) => g.total === 0) };
 }

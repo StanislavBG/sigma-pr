@@ -5,15 +5,18 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { SEARCH_HITS_SQL, searchMatchQuery } from './queries/search';
+import { SEARCH_HITS_SQL_NO_CONFLICT, searchMatchQuery } from './queries/search';
 
-// Integration test for the REAL search ranking SQL (SEARCH_HITS_SQL, imported from queries/search.ts —
-// not a hand-copied mirror) against a real SQLite FTS5 search_index built from the production
-// migration. Regression coverage for issue #25: an authority/company whose title repeats the query
-// terms several times (e.g. a municipality name field concatenating several child-entity names) must
-// not outrank an entity whose title is an exact, single match. search.test.ts's unit tests fake D1 and
-// never run real FTS5 ranking, so they can't catch this. Mirrors the sqlite3-CLI harness of
-// amendments-sql.test.ts / competition-sql.test.ts.
+// Integration test for the REAL search ranking SQL (SEARCH_HITS_SQL_NO_CONFLICT, imported from
+// queries/search.ts — not a hand-copied mirror) against a real SQLite FTS5 search_index built from
+// the base migration only. Regression coverage for issue #25: an authority/company whose title
+// repeats the query terms several times (e.g. a municipality name field concatenating several
+// child-entity names) must not outrank an entity whose title is an exact, single match.
+// search.test.ts's unit tests fake D1 and never run real FTS5 ranking, so they can't catch this.
+// Mirrors the sqlite3-CLI harness of amendments-sql.test.ts / competition-sql.test.ts. Uses the
+// NO_CONFLICT variant deliberately: this suite is about rank ordering over `authority` rows, not the
+// свързани-лица conflict join (covered by search-sql.test.ts), so it only needs migration 0000 — both
+// variants share the identical CANDIDATES/tie-break structure the ranking assertions below exercise.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const migration0 = resolve(root, 'packages/db/migrations/0000_init.sql');
@@ -57,7 +60,7 @@ function bindParams(sql: string, params: string[]): string {
 // sqlite3 prints them as: ref, title, ident, subtitle, amount, entity_kind, ownership_kind, eik_valid.
 function rankedRows(dbPath: string, query: string): string[][] {
   const match = searchMatchQuery(query);
-  const sql = bindParams(SEARCH_HITS_SQL, ["'authority'", `'${match}'`, '10']);
+  const sql = bindParams(SEARCH_HITS_SQL_NO_CONFLICT, ["'authority'", `'${match}'`, '10']);
   const out = sqlite(dbPath, sql);
   if (out === '') return [];
   return out.split('\n').map((line) => line.split('|'));
@@ -71,7 +74,7 @@ function rankedRefs(dbPath: string, query: string): string[] {
   return rankedRows(dbPath, query).map((cols) => cols[0] ?? '');
 }
 
-describe('search ranking SQL (real SQLite FTS5, SEARCH_HITS_SQL)', () => {
+describe('search ranking SQL (real SQLite FTS5, SEARCH_HITS_SQL_NO_CONFLICT)', () => {
   it('ranks exact, single-match titles above a title that repeats the query terms several times (#25)', () => {
     withDb((dbPath) => {
       insertAuthorityRows(dbPath, [
@@ -125,7 +128,7 @@ describe('search ranking SQL (real SQLite FTS5, SEARCH_HITS_SQL)', () => {
   it('drives the match with FTS5 rank ordering, not a full sort of every match', () => {
     withDb((dbPath) => {
       insertAuthorityRows(dbPath, [['auth:1', 'Община Ботевград']]);
-      const sql = bindParams(SEARCH_HITS_SQL, [
+      const sql = bindParams(SEARCH_HITS_SQL_NO_CONFLICT, [
         "'authority'",
         `'${searchMatchQuery('ботевград')}'`,
         '6',
