@@ -35,9 +35,17 @@ export interface TrendParams {
   includeCurrent?: boolean;
 }
 
-/** Valid selected 5-digit CPV group codes, or [] — shared by the trend + overview-list scopes. */
+// D1 statements accept at most 100 bound parameters (same limit overruns.ts chunks against), and
+// cpvGroupsClause binds TWO per group. The clause lives inside a single aggregate scan (a GROUP BY /
+// a LIMITed list), so unlike the overruns IN-list it cannot be split across statements — instead the
+// group count is capped server-side. 40 groups = 80 params, leaving headroom for the scope's other
+// binds (START, sector, authority, bidder, year, LIMIT). Defense in depth behind the route parser.
+const MAX_CPV_GROUPS = 40;
+
+/** Valid selected 5-digit CPV group codes (capped at MAX_CPV_GROUPS), or [] — shared by the trend +
+ *  overview-list scopes. */
 function validCpvGroups(groups: string[] | null | undefined): string[] {
-  return (groups ?? []).filter((g) => /^\d{5}$/.test(g));
+  return (groups ?? []).filter((g) => /^\d{5}$/.test(g)).slice(0, MAX_CPV_GROUPS);
 }
 
 /** `(range OR range …)` clause over idx_tenders_cpv for a validated group set (caller pushes params). */

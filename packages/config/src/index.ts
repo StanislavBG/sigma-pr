@@ -238,14 +238,42 @@ export function categoryForDivision(division: string | null | undefined): CpvCat
 //                (Строителни конструкции и материали) is a SUPPLY of materials and belongs in goods.
 //   • services — the 50-series-and-up service divisions, per the CPV catalogue's own grouping:
 //                50 51 55 60 63 64 65 66 70 71 72 73 75 76 77 79 80 85 90 92 98.
-//   • goods    — every other catalogued division (supplies of products/equipment), including 44.
+//   • goods    — the remaining catalogued divisions (supplies of products/equipment), including 44.
 // It is a deterministic PARTITION (every division assigned to exactly one bucket), not a keyword
 // heuristic — the same discipline as CPV_CATEGORIES above. Source: Reg. (EC) 213/2008 (CPV) +
 // Directive 2014/24/EU contract-type definitions.
+// All three buckets are EXPLICIT sets (goods is not a fallback): a future division added to
+// CPV_SECTORS but forgotten here falls to `other`, which the partition tests below fail loudly on —
+// it can never be silently misclassified as goods.
 
 export type CpvBucket = 'works' | 'goods' | 'services' | 'other';
 
 const CPV_BUCKET_WORKS: ReadonlySet<string> = new Set(['45']);
+const CPV_BUCKET_GOODS: ReadonlySet<string> = new Set([
+  '03',
+  '09',
+  '14',
+  '15',
+  '16',
+  '18',
+  '19',
+  '22',
+  '24',
+  '30',
+  '31',
+  '32',
+  '33',
+  '34',
+  '35',
+  '37',
+  '38',
+  '39',
+  '41',
+  '42',
+  '43',
+  '44',
+  '48',
+]);
 const CPV_BUCKET_SERVICES: ReadonlySet<string> = new Set([
   '50',
   '51',
@@ -272,15 +300,16 @@ const CPV_BUCKET_SERVICES: ReadonlySet<string> = new Set([
 
 const CPV_DIVISION_SET: ReadonlySet<string> = new Set(CPV_SECTORS.map((s) => s.code));
 
-/** Classify a CPV division/full code into its works/goods/services bucket. Unknown or missing codes
- *  fall to `other` (never silently coerced into a real bucket). Deterministic. */
+/** Classify a CPV division/full code into its works/goods/services bucket. Unknown, missing or
+ *  unassigned codes fall to `other` (never silently coerced into a real bucket). Deterministic. */
 export function cpvBucket(division: string | null | undefined): CpvBucket {
   const code = cpvDivision(division);
   if (!code) return 'other';
   if (!CPV_DIVISION_SET.has(code)) return 'other';
   if (CPV_BUCKET_WORKS.has(code)) return 'works';
   if (CPV_BUCKET_SERVICES.has(code)) return 'services';
-  return 'goods';
+  if (CPV_BUCKET_GOODS.has(code)) return 'goods';
+  return 'other';
 }
 
 // ── Procedure groups (ЗОП procedure_type → display group) ──────────────────────────────────────

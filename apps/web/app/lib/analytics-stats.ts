@@ -150,7 +150,13 @@ const GROWTH_TRAILING_YEARS = 3;
  * trailing window is what protects the figure from the early ramp-up years, not the median per se.
  * The factor is the median of the consecutive year ratios within the window; at the default 3-year
  * window there are only two ratios, so the median coincides with their mean. Fewer than two complete
- * years → flat.
+ * years → flat. Only ADJACENT calendar years form a ratio: a gap in the complete-year series (e.g.
+ * [2021, 2023]) yields no pair, so a two-year jump is never read as a one-year YoY factor.
+ *
+ * Invariant (documented, not enforced): `months === 12` assumes the input is the /trends monthly
+ * series from getSpendingTrend, which zero-fills every gap month — so any non-edge year always
+ * carries exactly 12 points. A sparse, non-zero-filled series would silently drop years from the
+ * estimate (fail-safe: the result degrades toward flat, never toward a fabricated rate).
  */
 export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   const byYear = new Map<
@@ -176,8 +182,11 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   const valueRatios: number[] = [];
   const countRatios: number[] = [];
   for (let i = 1; i < recent.length; i += 1) {
-    const prev = recent[i - 1]![1];
-    const cur = recent[i]![1];
+    const [prevYear, prev] = recent[i - 1]!;
+    const [curYear, cur] = recent[i]!;
+    // Only a true one-year step is a YoY ratio: across a gap (e.g. 2021 → 2023 with 2022 missing)
+    // cur/prev spans two years and would overstate growth, so the pair is skipped.
+    if (curYear - prevYear !== 1) continue;
     if (prev.value > 0) valueRatios.push(cur.value / prev.value);
     if (prev.count > 0) countRatios.push(cur.count / prev.count);
   }

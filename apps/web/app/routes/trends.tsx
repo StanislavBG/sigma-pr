@@ -602,7 +602,7 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
               </h2>
               <p className="ov-panel-hint">
                 {count(contracts.length)} {plural(contracts.length, 'договор', 'договора')}
-                {truncated ? ' (показани първите 24)' : ''} · {scopeText}
+                {truncated ? ` (показани първите ${CONTRACT_CARD_LIMIT})` : ''} · {scopeText}
               </p>
             </div>
             <div className="ov-panel-tools">

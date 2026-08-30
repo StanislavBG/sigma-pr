@@ -126,6 +126,14 @@ describe('estimateYoyGrowth', () => {
     expect(estimateYoyGrowth(year(2023, 100, 50, true))).toEqual({ value: 1, count: 1 });
   });
 
+  it('never treats a ratio across a gap year as a one-year YoY factor', () => {
+    // 2022 is missing entirely: [2021, 2023] are the only complete years. 100 → 144 spans TWO
+    // years (~+20%/yr compounded) — reading it as a single-year +44% would overstate growth, so
+    // the non-adjacent pair must produce no ratio at all → flat.
+    const points = [...year(2021, 100, 50), ...year(2023, 144, 72)];
+    expect(estimateYoyGrowth(points)).toEqual({ value: 1, count: 1 });
+  });
+
   it('clamps an absurd ratio into the sane band', () => {
     const points = [...year(2021, 1, 1), ...year(2022, 1000, 1000)];
     const g = estimateYoyGrowth(points);

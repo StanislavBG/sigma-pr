@@ -257,6 +257,24 @@ describe('getSpendingTrend', () => {
     expect(series[0]!.binds).toEqual(['2020-01-01']);
   });
 
+  it('caps the CPV group set so the clause can never exceed D1’s 100-bound-parameter limit', async () => {
+    // 60 valid groups would bind 120 range params (2 per group) + START — past D1's 100-variable
+    // cap. The server-side cap must truncate the set so the statement stays bindable, not throw.
+    const groups = Array.from({ length: 60 }, (_, i) => String(10000 + i));
+    const captured = fake();
+    await getSpendingTrend(captured.db, { cpvGroups: groups }, { includeSectors: false });
+    const series = captured.calls.find((c) => c.sql.includes('GROUP BY period'))!;
+    expect(series.binds.length).toBeLessThanOrEqual(100);
+    expect(series.binds.length).toBe(1 + 40 * 2); // START + 2 per group at the 40-group cap
+
+    // Same guard on the overview-list path, which shares validCpvGroups/cpvGroupsClause.
+    const calls: QueryCall[] = [];
+    const db = overviewDb({ calls, all: () => [] });
+    await listOverviewContracts(db, { cpvGroups: groups });
+    expect(calls[0]!.args.length).toBeLessThanOrEqual(100);
+    expect(calls[0]!.args.length).toBe(1 + 40 * 2 + 1); // START + ranges + LIMIT
+  });
+
   it('ignores malformed CPV groups instead of joining tenders on garbage', async () => {
     const captured = fake();
     await getSpendingTrend(captured.db, { cpvGroups: ['4523', 'abcde', "45'--"] });

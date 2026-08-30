@@ -76,9 +76,10 @@ describe('cpvBucket', () => {
   });
 
   it('never leaves a catalogued division on the default „other" bucket', () => {
-    // Guard: a future service division added to CPV_SECTORS but not to CPV_BUCKET_SERVICES would
-    // silently fall through to „goods" — but one added entirely outside the bucket sets (none today)
-    // would land on „other". Every catalogued code MUST resolve to a real bucket, never the fallback.
+    // Guard: all three buckets are explicit sets (goods is NOT a fallback), so a future division
+    // added to CPV_SECTORS but forgotten in every CPV_BUCKET_* set falls to „other" and trips this
+    // test loudly — together with the partition test above this asserts works ∪ goods ∪ services
+    // covers CPV_SECTORS exactly, with no silent misclassification of a new service as goods.
     for (const sector of CPV_SECTORS) {
       expect(cpvBucket(sector.code)).not.toBe('other');
     }

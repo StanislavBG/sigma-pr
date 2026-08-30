@@ -464,6 +464,8 @@ export async function getCompetition(
 // and the pp-change off it, and a partial year (half the contracts signed so far) would understate
 // both. We cap at the year before `strftime('%Y','now')` so the headline always reads the latest
 // COMPLETE year — mirroring trend.ts dropping its partial as_of year.
+// The `<` on the year is a LEXICOGRAPHIC string comparison; it is correct only because the GLOB
+// '[0-9][0-9][0-9][0-9]' guard above pins both sides to exactly 4 digits — keep the two in lockstep.
 export interface OpaqueYearRow {
   year: string;
   valueEur: number;
