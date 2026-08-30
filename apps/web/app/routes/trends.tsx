@@ -39,7 +39,7 @@ export function headers() {
 type Angle = 'time' | 'cpv' | 'cross';
 type Step = 'm' | 'q' | 'y';
 
-function pick<T extends string>(raw: string | null, allowed: readonly T[], fallback: T): T {
+export function pick<T extends string>(raw: string | null, allowed: readonly T[], fallback: T): T {
   return raw != null && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
 }
 
@@ -126,12 +126,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 // ── Presentational helpers ────────────────────────────────────────────────────────────────────────
 
 /** ×N with a Bulgarian decimal comma: 2.4 → '×2,4', 15 → '×15'. */
-function multText(mult: number): string {
+export function multText(mult: number): string {
   if (mult >= 10) return `×${Math.round(mult)}`;
   return `×${(Math.round(mult * 10) / 10).toString().replace('.', ',')}`;
 }
 
-function relLabel(valueEur: number, medianEur: number): { text: string; cls: string } {
+export function relLabel(valueEur: number, medianEur: number): { text: string; cls: string } {
   if (!(medianEur > 0)) return { text: '≈ типичното', cls: 'ov-rel-mid' };
   const mult = valueEur / medianEur;
   if (mult >= 1.3) return { text: `${multText(mult)} типичното`, cls: 'ov-rel-hi' };
@@ -140,7 +140,7 @@ function relLabel(valueEur: number, medianEur: number): { text: string; cls: str
 }
 
 // Deterministic jitter for the dot cloud (presentation only — the x positions are real values).
-function jitter(seedText: string, i: number): number {
+export function jitter(seedText: string, i: number): number {
   let h = 2166136261;
   for (const ch of `${seedText}:${i}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
   return ((h >>> 8) % 1000) / 1000 - 0.5;
@@ -148,17 +148,17 @@ function jitter(seedText: string, i: number): number {
 
 const LOG_MIN = 1e3;
 
-function logMax(groups: CpvGroupStat[]): number {
+export function logMax(groups: CpvGroupStat[]): number {
   const max = Math.max(1e6, ...groups.map((g) => g.maxEur));
   return 10 ** Math.ceil(Math.log10(max));
 }
 
-function axisLabel(v: number): string {
+export function axisLabel(v: number): string {
   return v >= 1e6 ? `${v / 1e6}М` : `${v / 1e3}к`;
 }
 
 /** log-€ → x in the 320-wide distribution strip. */
-function makeLx(gMax: number) {
+export function makeLx(gMax: number) {
   const lo = Math.log10(LOG_MIN);
   const hi = Math.log10(gMax);
   return (v: number) =>

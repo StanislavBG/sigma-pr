@@ -117,21 +117,21 @@ const contractColumns: Column<OverrunRow>[] = [
 
 // ── inspector field helpers (REAL contract metadata, mock-faithful formatting) ────────
 // „Финансиране": EU-funded → „Европейско [· programme]", national → „Национално", unknown → „—".
-function financingText(row: OverrunRow): string {
+export function financingText(row: OverrunRow): string {
   if (row.euFunded == null) return '—';
   if (!row.euFunded) return 'Национално';
   return row.euProgramme ? `Европейско · ${row.euProgramme}` : 'Европейско';
 }
 
 // „CPV код": „45233110 — Строеж на магистрали" when both present; code alone, or „—" when absent.
-function cpvText(row: OverrunRow): string {
+export function cpvText(row: OverrunRow): string {
   if (!row.cpvCode) return '—';
   return row.cpvDescription ? `${row.cpvCode} — ${row.cpvDescription}` : row.cpvCode;
 }
 
 // „Срок": the contract term — the tender's „Очакван край" date when present, else the contract's
 // duration in days. Returns null when neither is on record so the row is omitted (never fabricated).
-function termText(row: OverrunRow): string | null {
+export function termText(row: OverrunRow): string | null {
   if (row.endDate) return date(row.endDate);
   if (row.durationDays != null) return `${count(row.durationDays)} дни`;
   return null;
@@ -139,7 +139,7 @@ function termText(row: OverrunRow): string | null {
 
 // The structured „ДЕТАЙЛИ ПО ДОГОВОРА" grid — every value is a real contracts/tenders column. The
 // „Срок" row is only included when a real term value exists.
-function inspectorFields(row: OverrunRow): { k: string; v: string }[] {
+export function inspectorFields(row: OverrunRow): { k: string; v: string }[] {
   const term = termText(row);
   return [
     { k: 'Сектор', v: row.sectorLabel },
