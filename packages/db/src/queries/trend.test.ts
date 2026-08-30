@@ -19,6 +19,11 @@ const SERIES = [
 ];
 const COVERAGE = { dated: 80, total: 100 };
 
+interface QueryCall {
+  sql: string;
+  args: unknown[];
+}
+
 /** Which scoped fixture a call wants is in its bound arguments, not its SQL. */
 const scopedBy = <T>(binds: unknown[], authority: T, bidder: T, national: T): T =>
   binds.includes('auth:111') ? authority : binds.includes('eik:222') ? bidder : national;
