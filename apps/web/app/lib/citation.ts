@@ -15,8 +15,10 @@ export function buildContractCitation(
     `Възложител: ${c.authority.name}`,
     `Изпълнител: ${c.bidder ? c.bidder.displayName : '—'}`,
     `Стойност: ${money(c.value.currentEur)}`,
-    // `c.id` is already the percent-encoded slug (contractSlug output, see
-    // routes/contract.tsx), so the path-safe URL below needs no `slug` field of its own.
+    // `c.id` is already the percent-encoded slug (contractSlug output) — verified at
+    // packages/db/src/queries/details.ts:709 (`id: contractSlug(r.id)`), guarded by
+    // packages/db/src/queries/details.test.ts's "encodes the raw row id as the
+    // contractSlug ..." test — so the path-safe URL below needs no `slug` field of its own.
     `Връзка: ${origin}/contracts/${c.id}`,
   ].join('\n');
 }

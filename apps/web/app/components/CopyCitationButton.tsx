@@ -78,10 +78,13 @@ export function CopyCitationButton({ textToCopy }: { textToCopy: string }) {
       type="button"
       onClick={handleCopy}
       className={`copy-btn ${copied ? 'is-copied' : ''}`}
-      aria-label={
-        failed ? 'Копирането не бе успешно' : copied ? 'Копирано!' : 'Копирай данните като цитат'
+      title={
+        failed
+          ? 'Копирането не бе успешно — опитайте отново'
+          : copied
+            ? 'Копирано!'
+            : 'Копирай основните факти'
       }
-      title={failed ? 'Копирането не бе успешно — опитайте отново' : 'Копирай основните факти'}
     >
       {copied ? (
         <svg
@@ -113,6 +116,9 @@ export function CopyCitationButton({ textToCopy }: { textToCopy: string }) {
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
         </svg>
       )}
+      {/* Sole live-announcement mechanism (review #206): no aria-label override here — the
+          button's accessible name comes from this visible text, so its aria-live="polite"
+          update is the only thing screen readers announce on status change. */}
       <span className="copy-btn-text" aria-live="polite">
         {copied ? 'Копирано!' : failed ? 'Неуспешно копиране' : 'Копирай'}
       </span>
