@@ -108,20 +108,18 @@ function fakeBeneficiaryDb(
   capture?: { sql?: string; params?: unknown[] },
   rows: unknown[] = BENEFICIARY_ROWS,
 ): D1Database {
-  return {
-    prepare(sql: string) {
-      if (capture) capture.sql = sql;
-      return {
-        bind(...params: unknown[]) {
-          if (capture) capture.params = params;
-          return this;
-        },
-        async all<T>() {
-          return { results: rows as T[] };
-        },
-      };
+  return fakeD1([
+    {
+      when: [],
+      all: (call) => {
+        if (capture) {
+          capture.sql = call.sql;
+          capture.params = call.binds;
+        }
+        return rows;
+      },
     },
-  } as unknown as D1Database;
+  ]).db;
 }
 
 describe('getRegionTopBeneficiaries', () => {
@@ -183,28 +181,20 @@ describe('getRegionTopBeneficiaries', () => {
 
   it('guards against a zero region_total (no NaN/Infinity share)', async () => {
     function zeroTotalDb(): D1Database {
-      return {
-        prepare() {
-          return {
-            bind() {
-              return this;
+      return fakeD1([
+        {
+          when: [],
+          all: [
+            {
+              region: 'Пловдив',
+              bidder_id: 'b1',
+              name: 'Alpha OOD',
+              value_eur: 0,
+              region_total: 0,
             },
-            async all<T>() {
-              return {
-                results: [
-                  {
-                    region: 'Пловдив',
-                    bidder_id: 'b1',
-                    name: 'Alpha OOD',
-                    value_eur: 0,
-                    region_total: 0,
-                  },
-                ] as T[],
-              };
-            },
-          };
+          ],
         },
-      } as unknown as D1Database;
+      ]).db;
     }
     const map = await getRegionTopBeneficiaries(zeroTotalDb(), {});
     const plovdiv = map.get('BG421') ?? [];
