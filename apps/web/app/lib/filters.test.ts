@@ -153,6 +153,15 @@ describe('cpvGroupSelection', () => {
     expect(out[0]).toBe('10000');
     expect(out.at(-1)).toBe(String(10000 + MAX_CPV_GROUP_SELECTION - 1));
   });
+
+  it('caps the raw-value bound the same for one comma-separated param as for that many repeated params', () => {
+    const values = Array.from({ length: 500 }, (_, i) => 10000 + i);
+    const oneParam = cpvGroupSelection(sp(`cpv=${values.join(',')}`));
+    const manyParams = cpvGroupSelection(sp(values.map((v) => `cpv=${v}`).join('&')));
+    expect(oneParam).toEqual(manyParams);
+    expect(oneParam).toHaveLength(MAX_CPV_GROUP_SELECTION);
+    expect(oneParam[0]).toBe('10000');
+  });
 });
 
 describe('searchHref', () => {
