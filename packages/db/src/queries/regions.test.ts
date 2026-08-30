@@ -63,7 +63,7 @@ describe('getRegionalSpending', () => {
     // The choropleth card labels „Дял от всички области/райони" against `totalValueEur` in both modes;
     // that is only truthful if every oblast rolls into exactly one район, i.e. the two sums are equal.
     // If macroRegions ever stops being a pure roll-up of regions, this guard fails before it ships.
-    const { regions, macroRegions, totalValueEur } = await getRegionalSpending(fakeDb(), {});
+    const { regions, macroRegions, totalValueEur } = await getRegionalSpending(fake().db, {});
     const sumRegions = regions.reduce((s, r) => s + r.valueEur, 0);
     const sumMacros = macroRegions.reduce((s, m) => s + m.valueEur, 0);
     expect(sumRegions).toBe(sumMacros);
@@ -195,13 +195,13 @@ describe('getRegionTopBeneficiaries', () => {
   it('builds the SAME WHERE-clause fragments and bound params as regionRows() for the same params', async () => {
     // Parity check that getRegionTopBeneficiaries and getRegionalSpending's (filtered) internal
     // regionRows() share the scopeFilters() helper and can't drift apart.
-    const spendingCapture: string[] = [];
-    await getRegionalSpending(fakeDb(spendingCapture), {
+    const spendingFake = fake();
+    await getRegionalSpending(spendingFake.db, {
       sector: '45',
       year: '2023',
       funding: 'eu',
     });
-    const spendingSql = spendingCapture.find((s) => s.includes('JOIN tenders t'));
+    const spendingSql = spendingFake.sql.find((s) => s.includes('JOIN tenders t'));
 
     const beneficiaryCapture: { sql?: string; params?: unknown[] } = {};
     await getRegionTopBeneficiaries(fakeBeneficiaryDb(beneficiaryCapture), {
