@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fakeD1, type FakeD1 } from '@sigma/test-support';
 import {
   getCpvGroupMedians,
   getCpvGroupStats,
@@ -18,29 +19,18 @@ const SERIES = [
 ];
 const COVERAGE = { dated: 80, total: 100 };
 
-interface QueryCall {
-  sql: string;
-  args: unknown[];
-}
+/** Which scoped fixture a call wants is in its bound arguments, not its SQL. */
+const scopedBy = <T>(binds: unknown[], authority: T, bidder: T, national: T): T =>
+  binds.includes('auth:111') ? authority : binds.includes('eik:222') ? bidder : national;
 
-function fakeDb(capture?: string[], asOf: string | null = null): D1Database {
-  return {
-    prepare(sql: string) {
-      capture?.push(sql);
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          return { results: SERIES as T[] };
-        },
-        async first<T>() {
-          if (sql.includes('as_of')) return { as_of: asOf } as T;
-          return COVERAGE as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+function fake(asOf: string | null = null): FakeD1 {
+  return fakeD1([
+    { when: 'GROUP BY period', all: SERIES },
+    { when: 'COUNT(*) AS total', first: COVERAGE },
+    { when: 'SELECT as_of FROM home_totals', first: { as_of: asOf } },
+    // getSpendingTrend also fills the sector-filter dropdown; no test here asserts on it.
+    { when: 'FROM sector_totals', all: [] },
+  ]);
 }
 
 const SCOPED_SERIES = {
@@ -58,36 +48,31 @@ const SCOPED_SERIES = {
   ],
 };
 
-function scopedFakeDb(calls: QueryCall[]): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        args: [] as unknown[],
-        bind(...args: unknown[]) {
-          this.args = args;
-          calls.push({ sql, args });
-          return this;
-        },
-        async all<T>() {
-          if (sql.includes('FROM sector_totals')) return { results: [{ division: '45' }] as T[] };
-          if (this.args.includes('auth:111')) return { results: SCOPED_SERIES.authority as T[] };
-          if (this.args.includes('eik:222')) return { results: SCOPED_SERIES.bidder as T[] };
-          return { results: SCOPED_SERIES.national as T[] };
-        },
-        async first<T>() {
-          if (sql.includes('as_of')) return { as_of: null } as T;
-          if (this.args.includes('auth:111')) return { dated: 50, total: 60 } as T;
-          if (this.args.includes('eik:222')) return { dated: 25, total: 30 } as T;
-          return { dated: 120, total: 140 } as T;
-        },
-      };
+function scopedFake(): FakeD1 {
+  return fakeD1([
+    { when: 'FROM sector_totals', all: [{ division: '45' }] },
+    { when: 'SELECT as_of FROM home_totals', first: { as_of: null } },
+    {
+      when: 'GROUP BY period',
+      all: (call) =>
+        scopedBy(call.binds, SCOPED_SERIES.authority, SCOPED_SERIES.bidder, SCOPED_SERIES.national),
     },
-  } as unknown as D1Database;
+    {
+      when: 'COUNT(*) AS total',
+      first: (call) =>
+        scopedBy(
+          call.binds,
+          { dated: 50, total: 60 },
+          { dated: 25, total: 30 },
+          { dated: 120, total: 140 },
+        ),
+    },
+  ]);
 }
 
 describe('getSpendingTrend', () => {
   it('zero-fills gaps so the monthly series is continuous', async () => {
-    const { points } = await getSpendingTrend(fakeDb(), {});
+    const { points } = await getSpendingTrend(fake().db, {});
     expect(points).toHaveLength(13); // 2022-01 .. 2023-01 inclusive
     expect(points[0]!.period).toBe('2022-01');
     expect(points.at(-1)!.period).toBe('2023-01');
@@ -95,7 +80,7 @@ describe('getSpendingTrend', () => {
   });
 
   it('folds months into a per-year summary with year-over-year change', async () => {
-    const { years } = await getSpendingTrend(fakeDb(), {});
+    const { years } = await getSpendingTrend(fake().db, {});
     expect(years).toEqual([
       { year: '2022', valueEur: 4000, contracts: 40, yoyPct: null, partial: false },
       { year: '2023', valueEur: 5000, contracts: 50, yoyPct: 0.25, partial: false }, // (5000 - 4000) / 4000
@@ -136,7 +121,7 @@ describe('getSpendingTrend', () => {
   });
 
   it('excludes the current (as_of) month by default — the series ends on the last complete month', async () => {
-    const { points, years } = await getSpendingTrend(fakeDb(undefined, '2023-01-15'), {});
+    const { points, years } = await getSpendingTrend(fake('2023-01-15').db, {});
     // 2023-01 is the as_of month → dropped; the zero-fill ends at the last remaining actual.
     expect(points.map((p) => p.period)).toEqual(['2022-01', '2022-02', '2022-03']);
     expect(points.every((p) => !p.partial)).toBe(true);
@@ -145,7 +130,7 @@ describe('getSpendingTrend', () => {
   });
 
   it('excludes the current quarter by default at quarter grain', async () => {
-    const { points } = await getSpendingTrend(fakeDb(undefined, '2023-01-15'), {
+    const { points } = await getSpendingTrend(fake('2023-01-15').db, {
       granularity: 'quarter',
     });
     // Both 2022 months fold into 2022-Q1; the as_of quarter (2023-Q1) is dropped, so the series
@@ -190,7 +175,7 @@ describe('getSpendingTrend', () => {
   });
 
   it('with includeCurrent, marks the as_of period and year partial and suppresses the partial year YoY', async () => {
-    const { points, years } = await getSpendingTrend(fakeDb(undefined, '2023-01-15'), {
+    const { points, years } = await getSpendingTrend(fake('2023-01-15').db, {
       includeCurrent: true,
     });
     expect(points.at(-1)).toMatchObject({ period: '2023-01', partial: true });
@@ -201,35 +186,35 @@ describe('getSpendingTrend', () => {
   });
 
   it('reports coverage of contracts with a usable signing date', async () => {
-    const { coverage, totalValueEur } = await getSpendingTrend(fakeDb(), {});
+    const { coverage, totalValueEur } = await getSpendingTrend(fake().db, {});
     expect(coverage).toEqual({ dated: 80, total: 100, pct: 0.8 });
     expect(totalValueEur).toBe(9000); // 1000 + 3000 + 5000
   });
 
   it('uses month substr by default and year substr when asked', async () => {
-    const month: string[] = [];
-    await getSpendingTrend(fakeDb(month), {});
-    expect(month.some((s) => s.includes('substr(c.signed_at, 1, 7)'))).toBe(true);
+    const month = fake();
+    await getSpendingTrend(month.db, {});
+    expect(month.sql.some((s) => s.includes('substr(c.signed_at, 1, 7)'))).toBe(true);
 
-    const year: string[] = [];
-    await getSpendingTrend(fakeDb(year), { granularity: 'year' });
-    expect(year.some((s) => s.includes('substr(c.signed_at, 1, 4) AS period'))).toBe(true);
+    const year = fake();
+    await getSpendingTrend(year.db, { granularity: 'year' });
+    expect(year.sql.some((s) => s.includes('substr(c.signed_at, 1, 4) AS period'))).toBe(true);
   });
 
   it('joins tenders only when a sector filter is set', async () => {
-    const plain: string[] = [];
-    await getSpendingTrend(fakeDb(plain), {});
-    expect(plain.some((s) => s.includes('JOIN tenders'))).toBe(false);
+    const plain = fake();
+    await getSpendingTrend(plain.db, {});
+    expect(plain.sql.some((s) => s.includes('JOIN tenders'))).toBe(false);
 
-    const filtered: string[] = [];
-    await getSpendingTrend(fakeDb(filtered), { sector: '45' });
-    expect(filtered.some((s) => s.includes('JOIN tenders t'))).toBe(true);
+    const filtered = fake();
+    await getSpendingTrend(filtered.db, { sector: '45' });
+    expect(filtered.sql.some((s) => s.includes('JOIN tenders t'))).toBe(true);
   });
 
   it('scopes the trend by authorityId through the tender authority', async () => {
-    const national = await getSpendingTrend(scopedFakeDb([]), { granularity: 'year' });
-    const calls: QueryCall[] = [];
-    const scoped = await getSpendingTrend(scopedFakeDb(calls), {
+    const national = await getSpendingTrend(scopedFake().db, { granularity: 'year' });
+    const calls = scopedFake();
+    const scoped = await getSpendingTrend(calls.db, {
       authorityId: 'auth:111',
       granularity: 'year',
     });
@@ -241,10 +226,10 @@ describe('getSpendingTrend', () => {
       { year: '2023', valueEur: 1000, contracts: 10 },
     ]);
 
-    const series = calls.find((c) => c.sql.includes('GROUP BY period'))!;
+    const series = calls.calls.find((c) => c.sql.includes('GROUP BY period'))!;
     expect(series.sql).toContain('JOIN tenders t ON t.id = c.tender_id');
     expect(series.sql).toContain('t.authority_id = ?');
-    expect(series.args).toEqual(['2020-01-01', 'auth:111']);
+    expect(series.binds).toEqual(['2020-01-01', 'auth:111']);
   });
 
   it('facets the whole series by selected CPV groups with one OR-of-ranges scan (no per-group queries)', async () => {
@@ -308,20 +293,20 @@ describe('getSpendingTrend', () => {
   });
 
   it('ignores malformed CPV groups instead of joining tenders on garbage', async () => {
-    const captured: string[] = [];
-    await getSpendingTrend(fakeDb(captured), { cpvGroups: ['4523', 'abcde', "45'--"] });
-    const series = captured.find((q) => q.includes('GROUP BY period'))!;
+    const captured = fake();
+    await getSpendingTrend(captured.db, { cpvGroups: ['4523', 'abcde', "45'--"] });
+    const series = captured.sql.find((q) => q.includes('GROUP BY period'))!;
     expect(series).not.toContain('JOIN tenders');
     expect(series).not.toContain('t.cpv_code >= ?');
   });
 
   it('folds monthly rows into a continuous quarterly series (queried at month grain)', async () => {
-    const sqls: string[] = [];
-    const { points, granularity } = await getSpendingTrend(fakeDb(sqls), {
+    const captured = fake();
+    const { points, granularity } = await getSpendingTrend(captured.db, {
       granularity: 'quarter',
     });
     // Quarters come from the monthly substr, not a SQL quarter expression.
-    expect(sqls.some((s) => s.includes('substr(c.signed_at, 1, 7)'))).toBe(true);
+    expect(captured.sql.some((s) => s.includes('substr(c.signed_at, 1, 7)'))).toBe(true);
     expect(granularity).toBe('quarter');
     expect(points.map((p) => p.period)).toEqual([
       '2022-Q1',
@@ -337,7 +322,7 @@ describe('getSpendingTrend', () => {
   });
 
   it('with includeCurrent, marks the as_of quarter partial', async () => {
-    const { points, years } = await getSpendingTrend(fakeDb(undefined, '2023-01-15'), {
+    const { points, years } = await getSpendingTrend(fake('2023-01-15').db, {
       granularity: 'quarter',
       includeCurrent: true,
     });
@@ -347,9 +332,9 @@ describe('getSpendingTrend', () => {
   });
 
   it('scopes the trend by bidderId through the contract bidder', async () => {
-    const national = await getSpendingTrend(scopedFakeDb([]), { granularity: 'year' });
-    const calls: QueryCall[] = [];
-    const scoped = await getSpendingTrend(scopedFakeDb(calls), {
+    const national = await getSpendingTrend(scopedFake().db, { granularity: 'year' });
+    const calls = scopedFake();
+    const scoped = await getSpendingTrend(calls.db, {
       bidderId: 'eik:222',
       granularity: 'year',
     });
@@ -361,14 +346,19 @@ describe('getSpendingTrend', () => {
       { year: '2023', valueEur: 500, contracts: 5 },
     ]);
 
-    const series = calls.find((c) => c.sql.includes('GROUP BY period'))!;
+    const series = calls.calls.find((c) => c.sql.includes('GROUP BY period'))!;
     expect(series.sql).toContain('c.bidder_id = ?');
     expect(series.sql).not.toContain('JOIN tenders t');
-    expect(series.args).toEqual(['2020-01-01', 'eik:222']);
+    expect(series.binds).toEqual(['2020-01-01', 'eik:222']);
   });
 });
 
 // ── Contracts overview queries ───────────────────────────────────────────────────────────────────
+
+interface QueryCall {
+  sql: string;
+  args: unknown[];
+}
 
 // Fake D1 that routes each prepared statement by SQL shape and records { sql, args } for assertions.
 function overviewDb(handlers: {
