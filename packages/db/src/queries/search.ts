@@ -166,7 +166,9 @@ assertLimitsWithinCandidates(GROUPS, CANDIDATES);
 // ENTIRE search 500 with „no such table". search() detects both tables once per request and picks the
 // no-conflict variant when either is absent, so search degrades to has_conflict=0 rather than breaking
 // (ADR-0031 robustness ask).
-const hitsSql = (withConflict: boolean): string => `SELECT h.ref, h.title, h.ident, h.subtitle, h.amount,
+const hitsSql = (
+  withConflict: boolean,
+): string => `SELECT h.ref, h.title, h.ident, h.subtitle, h.amount,
        ${RANK_EXPR} AS rank,
        ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid,
        ${withConflict ? '(cf.eik IS NOT NULL)' : '0'} AS has_conflict

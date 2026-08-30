@@ -147,12 +147,10 @@ describe('search helpers', () => {
     // If a group ever asks for more rows than CANDIDATES, the inner subquery can't supply them —
     // the outer LIMIT would silently return fewer rows than requested instead of throwing, which
     // is exactly the truncation this assertion exists to catch at module load time.
-    expect(() =>
-      assertLimitsWithinCandidates([{ kind: 'contract', limit: 51 }], 50),
-    ).toThrow(/exceeds CANDIDATES/);
-    expect(() =>
-      assertLimitsWithinCandidates([{ kind: 'contract', limit: 50 }], 50),
-    ).not.toThrow();
+    expect(() => assertLimitsWithinCandidates([{ kind: 'contract', limit: 51 }], 50)).toThrow(
+      /exceeds CANDIDATES/,
+    );
+    expect(() => assertLimitsWithinCandidates([{ kind: 'contract', limit: 50 }], 50)).not.toThrow();
   });
 
   it('reduces FTS5 operators/punctuation to plain prefix terms — no MATCH-syntax injection', () => {
