@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFetcher } from 'react-router';
 import type { NetworkData, NetworkNode } from '@sigma/api-contract';
 import { count, money, moneyBare } from '@sigma/shared';
-import { centerToken, countDirectEdges, isAdoptableNetwork } from '../lib/network-center';
+import {
+  centerToken,
+  countDirectEdges,
+  isAdoptableNetwork,
+  relationsDisplay,
+} from '../lib/network-center';
 import { GEOMETRY, labelPositions } from '../lib/network-layout';
 import { useForceGraph } from '../lib/useForceGraph';
 
@@ -416,7 +421,7 @@ export function NetworkGraph({ data }: { data: NetworkData }) {
                 </div>
                 <div>
                   <dt>{hoveredIsCenter ? 'Връзки общо' : 'Връзки в графа'}</dt>
-                  <dd>{count(hoveredRelations)}</dd>
+                  <dd>{relationsDisplay(hoveredRelations, count)}</dd>
                 </div>
               </dl>
               {hoveredNode.hop !== 0 && (

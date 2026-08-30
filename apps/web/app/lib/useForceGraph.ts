@@ -67,6 +67,19 @@ export function linkHop(link: SimLink): number {
   return Math.max(source.hop, target.hop);
 }
 
+// Same threshold d3-drag uses to decide whether to suppress the trailing synthetic `click`
+// (`dragBehaviour.clickDistance` below) — kept as one constant so the drag-vs-click decision here
+// can never drift from what the browser actually does with the click event.
+export const CLICK_DISTANCE = 4;
+
+// d3-drag fires a `drag` event on every pointer move, including the sub-pixel tremor under a tap —
+// this only reports "this is a real drag" once total travel from the gesture's origin crosses the
+// same threshold as `clickDistance`, so a 1-3px tremor still lets the node's onClick re-centre
+// instead of being treated as a drag. Pure so it's unit-testable without mounting d3-drag.
+export function isDragGesture(origin: { x: number; y: number }, current: { x: number; y: number }) {
+  return Math.hypot(current.x - origin.x, current.y - origin.y) > CLICK_DISTANCE;
+}
+
 interface Params {
   svgRef: RefObject<SVGSVGElement | null>;
   layerRef: RefObject<SVGGElement | null>;
@@ -113,6 +126,10 @@ export function useForceGraph({
   useEffect(() => subscribeReducedMotion(setReduceMotion), []);
 
   const draggedRef = useRef(false);
+  // Origin of the in-progress drag gesture, in the same coordinate space as d3's `drag` event.x/y —
+  // used to measure total travel so the drag-vs-click decision uses the same threshold as
+  // `dragBehaviour.clickDistance` below, instead of flagging a drag on the very first pointer move.
+  const dragOriginRef = useRef({ x: 0, y: 0 });
   // Gate the client-only zoom controls: false on SSR + first render (so hydration matches), true after
   // mount. The zoom behaviour is stashed in a ref so the button callbacks can drive it imperatively.
   const [interactive, setInteractive] = useState(false);
@@ -207,7 +224,7 @@ export function useForceGraph({
       .container(() => layerEl)
       // A tremor/tap under ~4px counts as a click (lets re-centre fire); past it, d3 suppresses the
       // synthetic click and it's a drag.
-      .clickDistance(4)
+      .clickDistance(CLICK_DISTANCE)
       .subject((event) => {
         const id = (event.sourceEvent.target as Element)
           .closest('[data-node-id]')
@@ -218,12 +235,16 @@ export function useForceGraph({
       })
       .on('start', (event) => {
         draggedRef.current = false;
+        dragOriginRef.current = { x: event.x, y: event.y };
         if (!event.active) sim.alphaTarget(0.3).restart();
         event.subject.fx = event.subject.x;
         event.subject.fy = event.subject.y;
       })
       .on('drag', (event) => {
-        draggedRef.current = true;
+        // d3 fires a `drag` event on every pointer move, including the sub-pixel tremor under a tap —
+        // only flip to "this was a drag" once total travel actually crosses the click threshold, so a
+        // 1-3px tremor still re-centres via the node's onClick instead of being treated as a drag.
+        if (isDragGesture(dragOriginRef.current, event)) draggedRef.current = true;
         event.subject.fx = event.x;
         event.subject.fy = event.y;
       })

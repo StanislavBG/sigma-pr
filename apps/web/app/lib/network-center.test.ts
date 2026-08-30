@@ -1,7 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { authoritySlug, companySlug } from '@sigma/db';
 import type { NetworkData, NetworkEdge } from '@sigma/api-contract';
-import { centerToken, countDirectEdges, isAdoptableNetwork, parseCenter } from './network-center';
+import {
+  centerToken,
+  countDirectEdges,
+  isAdoptableNetwork,
+  parseCenter,
+  relationsDisplay,
+} from './network-center';
 
 // The re-centre link side (centerToken) and the loader side (parseCenter) MUST agree on the `?center`
 // grammar, or re-centring breaks silently (the component lands in `failed` with no error). These tests
@@ -87,5 +93,24 @@ describe('countDirectEdges', () => {
 
   it('returns 0 when no edges touch the centre', () => {
     expect(countDirectEdges([edge('a', 'b')], 'center')).toBe(0);
+  });
+});
+
+describe('relationsDisplay', () => {
+  // Regression: the centre node's counterpartyTotal can be null when its COUNT(*) fails, and the
+  // Information Card must render the same explicit "unknown" treatment used elsewhere in this
+  // feature rather than passing null into the count formatter.
+  it('renders an em dash for a null relation count (failed COUNT(*)) without calling format', () => {
+    const format = vi.fn();
+    expect(relationsDisplay(null, format)).toBe('—');
+    expect(format).not.toHaveBeenCalled();
+  });
+
+  it('formats a real relation count through the given formatter', () => {
+    expect(relationsDisplay(42, (n) => `#${n}`)).toBe('#42');
+  });
+
+  it('formats zero as a real count, not as unknown', () => {
+    expect(relationsDisplay(0, (n) => `#${n}`)).toBe('#0');
   });
 });

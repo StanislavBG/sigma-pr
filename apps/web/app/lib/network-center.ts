@@ -67,3 +67,11 @@ export function countDirectEdges(
   if (!centerId) return 0;
   return edges.filter((e) => e.from === centerId || e.to === centerId).length;
 }
+
+// The Information Card's "Връзки общо/в графа" stat. `relations` is null only for the centre node
+// when its counterpartyTotal COUNT(*) failed — render the same explicit "unknown" dash used
+// elsewhere in this feature (e.g. the truncation caption) rather than formatting `null` as a count.
+// Pure so it's unit-testable without mounting NetworkGraph (which needs a router context).
+export function relationsDisplay(relations: number | null, format: (n: number) => string): string {
+  return relations === null ? '—' : format(relations);
+}
