@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fakeD1, type FakeD1 } from '@sigma/test-support';
 import { getEntityCounterparties, getEntityNetwork } from './network';
 
 // Fake D1 keyed by SQL markers (same approach as the other query tests). Verifies the ego-network
@@ -180,9 +181,22 @@ function fakeDbNoAuthorities(): D1Database {
   } as unknown as D1Database;
 }
 
+function fake(): FakeD1 {
+  return fakeD1([
+    { when: 'ORDER BY spent_eur', all: PICKER_AUTH },
+    { when: 'FROM company_totals', all: PICKER_COMP },
+    // Both hop queries are composed at runtime from a centre/neighbour column, so these markers
+    // exist only in the executed statement — never verbatim in network.ts.
+    { when: 'FROM flow_pairs WHERE authority_id = ?', all: HOP1 },
+    { when: 'WHERE bidder_id IN', all: HOP2 },
+    { when: 'FROM authority_totals WHERE authority_id', first: CENTER_AUTH },
+    { when: 'COUNT(*)', first: { n: 42 } },
+  ]);
+}
+
 describe('getEntityNetwork', () => {
   it('builds the centre, hop-1 neighbours and a deduped hop-2 ring', async () => {
-    const { center, nodes, edges } = await getEntityNetwork(fakeDb(), {
+    const { center, nodes, edges } = await getEntityNetwork(fake().db, {
       kind: 'authority',
       id: 'auth:C',
     });
@@ -193,21 +207,24 @@ describe('getEntityNetwork', () => {
   });
 
   it('alternates kinds by hop (authority centre -> company hop1 -> authority hop2)', async () => {
-    const { nodes } = await getEntityNetwork(fakeDb(), { kind: 'authority', id: 'auth:C' });
+    const { nodes } = await getEntityNetwork(fake().db, { kind: 'authority', id: 'auth:C' });
     const byId = new Map(nodes.map((n) => [n.id, n]));
     expect(byId.get('eik:A')).toMatchObject({ kind: 'company', hop: 1 });
     expect(byId.get('auth:X')).toMatchObject({ kind: 'authority', hop: 2 });
   });
 
   it('weights each node by the sum of its incident edges', async () => {
-    const { nodes } = await getEntityNetwork(fakeDb(), { kind: 'authority', id: 'auth:C' });
+    const { nodes } = await getEntityNetwork(fake().db, { kind: 'authority', id: 'auth:C' });
     const byId = new Map(nodes.map((n) => [n.id, n]));
     expect(byId.get('auth:C')!.valueEur).toBe(8000); // 5000 + 3000
     expect(byId.get('auth:X')!.valueEur).toBe(3500); // 2000 + 1500
   });
 
   it('offers centre options for the picker', async () => {
-    const { centerOptions } = await getEntityNetwork(fakeDb(), { kind: 'authority', id: 'auth:C' });
+    const { centerOptions } = await getEntityNetwork(fake().db, {
+      kind: 'authority',
+      id: 'auth:C',
+    });
     expect(centerOptions.authorities.length).toBeGreaterThan(0);
     expect(centerOptions.authorities[0]).toMatchObject({ kind: 'authority', value: 'a:C' });
   });

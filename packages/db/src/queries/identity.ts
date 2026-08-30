@@ -49,6 +49,25 @@ export function bidderIdFromSlug(slug: string): string | null {
   return null;
 }
 
+/** person id (`person:<name-key>|<institution-key>`) → `/conflicts/official/:slug` segment. The id encodes
+ *  the (name, institution) grain (ADR-0026; `personId()` in load.mjs) — NOT name alone — so two namesakes in
+ *  different institutions get DISTINCT slugs and never collapse into one page/row. The key is uppercase
+ *  Cyrillic with spaces (companyNameKey output) — not URL-clean — so base64url the WHOLE id (name+institution),
+ *  like a name-keyed bidder. Stable across rebuilds (depends only on the normalised name+institution); encodes
+ *  the id wholesale and never split-parses the internal `|`, nor the extra `|`s that link_key layers on. */
+export function personSlug(personId: string): string {
+  return b64urlEncode(personId.startsWith('person:') ? personId.slice(7) : personId);
+}
+
+/** `/conflicts/official/:slug` segment → person id, or null if the slug cannot be decoded. */
+export function personIdFromSlug(slug: string): string | null {
+  try {
+    return 'person:' + b64urlDecode(slug);
+  } catch {
+    return null;
+  }
+}
+
 /** authority id (`auth:ЕИК`) → `/authorities/:eik` segment. */
 export function authoritySlug(authorityId: string): string {
   return authorityId.startsWith('auth:') ? authorityId.slice(5) : authorityId;
@@ -93,8 +112,12 @@ export function contractIdFromSlug(slug: string): string {
 }
 
 /** Map a raw domain id to its explorer route. Used to turn FTS `ref`s into hrefs. */
-export function hrefForEntity(kind: 'authority' | 'company' | 'contract', id: string): string {
+export function hrefForEntity(
+  kind: 'authority' | 'company' | 'contract' | 'official',
+  id: string,
+): string {
   if (kind === 'authority') return `/authorities/${authoritySlug(id)}`;
   if (kind === 'company') return `/companies/${companySlug(id)}`;
+  if (kind === 'official') return `/conflicts/official/${personSlug(id)}`;
   return `/contracts/${contractSlug(id)}`;
 }
