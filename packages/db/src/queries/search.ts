@@ -116,6 +116,24 @@ const RANK_EXPR = `r / (1.0 + LENGTH(title) / 20.0)`;
 // sort in the outer query is over at most CANDIDATES rows, not the whole match set.
 const CANDIDATES = 50;
 
+// The outer `LIMIT ?` (bound to each group's `g.limit`) can never return more rows than the inner
+// subquery produces, which is capped at CANDIDATES — so a group asking for more than CANDIDATES
+// would be silently truncated below what it requested. Every GROUPS.limit must stay <= CANDIDATES;
+// asserted at module load so a future group with a larger limit fails fast instead of truncating.
+export function assertLimitsWithinCandidates(
+  groups: { kind: string; limit: number }[],
+  candidates: number,
+): void {
+  for (const g of groups) {
+    if (g.limit > candidates) {
+      throw new Error(
+        `search group "${g.kind}" limit (${g.limit}) exceeds CANDIDATES (${candidates}); the inner subquery only returns ${candidates} rows, so the outer LIMIT would silently truncate below the requested count`,
+      );
+    }
+  }
+}
+assertLimitsWithinCandidates(GROUPS, CANDIDATES);
+
 export const SEARCH_HITS_SQL = `SELECT h.ref, h.title, h.ident, h.subtitle, h.amount,
        ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid
 FROM (
@@ -128,7 +146,7 @@ FROM (
 ) h
 LEFT JOIN company_totals ct
   ON h.kind = 'company' AND ct.bidder_id = h.ref
-ORDER BY ${RANK_EXPR} LIMIT ?`;
+ORDER BY ${RANK_EXPR}, h.ref LIMIT ?`;
 
 export async function search(db: D1Database, rawQuery: string): Promise<SearchResults> {
   const query = (rawQuery ?? '').trim();

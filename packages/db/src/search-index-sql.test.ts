@@ -45,16 +45,30 @@ function insertAuthorityRows(dbPath: string, rows: [ref: string, title: string][
   );
 }
 
-// Runs the real production ORDER BY against a real FTS5 table and returns titles in ranked order.
-function rankedTitles(dbPath: string, query: string): string[] {
+// Substitutes each `?` placeholder in order with a literal SQL value. Uses a function replacer
+// (not a plain string) because `String.prototype.replace` treats `$` sequences in a string
+// replacement specially (`$&`, `$'`, ...) — a bound value containing `$` would otherwise corrupt
+// the substitution instead of being inserted literally.
+function bindParams(sql: string, params: string[]): string {
+  return params.reduce((acc, value) => acc.replace('?', () => value), sql);
+}
+
+// Runs the real production ORDER BY against a real FTS5 table, split on the pipe-delimited columns
+// sqlite3 prints them as: ref, title, ident, subtitle, amount, entity_kind, ownership_kind, eik_valid.
+function rankedRows(dbPath: string, query: string): string[][] {
   const match = searchMatchQuery(query);
-  const sql = SEARCH_HITS_SQL.replace('?', "'authority'")
-    .replace('?', `'${match}'`)
-    .replace('?', '10');
+  const sql = bindParams(SEARCH_HITS_SQL, ["'authority'", `'${match}'`, '10']);
   const out = sqlite(dbPath, sql);
   if (out === '') return [];
-  // ref, title, ident, subtitle, amount, entity_kind, ownership_kind, eik_valid — title is column 2.
-  return out.split('\n').map((line) => line.split('|')[1] ?? '');
+  return out.split('\n').map((line) => line.split('|'));
+}
+
+function rankedTitles(dbPath: string, query: string): string[] {
+  return rankedRows(dbPath, query).map((cols) => cols[1] ?? '');
+}
+
+function rankedRefs(dbPath: string, query: string): string[] {
+  return rankedRows(dbPath, query).map((cols) => cols[0] ?? '');
 }
 
 describe('search ranking SQL (real SQLite FTS5, SEARCH_HITS_SQL)', () => {
@@ -111,14 +125,37 @@ describe('search ranking SQL (real SQLite FTS5, SEARCH_HITS_SQL)', () => {
   it('drives the match with FTS5 rank ordering, not a full sort of every match', () => {
     withDb((dbPath) => {
       insertAuthorityRows(dbPath, [['auth:1', 'Община Ботевград']]);
-      const sql = SEARCH_HITS_SQL.replace('?', "'authority'")
-        .replace('?', `'${searchMatchQuery('ботевград')}'`)
-        .replace('?', '6');
+      const sql = bindParams(SEARCH_HITS_SQL, [
+        "'authority'",
+        `'${searchMatchQuery('ботевград')}'`,
+        '6',
+      ]);
       const plan = sqlite(dbPath, `EXPLAIN QUERY PLAN ${sql}`);
 
       // idx 32 is FTS5's "ordering by rank" flag; idx 0 means it fell back to an unordered scan.
       expect(plan).toMatch(/VIRTUAL TABLE INDEX 32/);
       expect(plan).not.toMatch(/VIRTUAL TABLE INDEX 0/);
+    });
+  });
+
+  it('substitutes a value containing `$` literally, not as a replace() special sequence', () => {
+    // A plain string replacement would interpret `$&`/`$'` in the bound value instead of inserting
+    // it verbatim — bindParams uses a function replacer specifically to avoid that.
+    expect(bindParams('WHERE a = ? AND b = ?', ["'$&'", "'$'"])).toBe("WHERE a = '$&' AND b = '$'");
+  });
+
+  it('breaks ties on `h.ref` so equal-rank, equal-length titles order deterministically', () => {
+    withDb((dbPath) => {
+      // Same title text (and thus identical rank and identical LENGTH(title)) on two rows can only
+      // be ordered by the secondary sort key, h.ref.
+      insertAuthorityRows(dbPath, [
+        ['auth:zzz', 'Детска градина Дъга'],
+        ['auth:aaa', 'Детска градина Дъга'],
+      ]);
+
+      const refs = rankedRefs(dbPath, 'детска градина');
+
+      expect(refs).toEqual(['auth:aaa', 'auth:zzz']);
     });
   });
 });
