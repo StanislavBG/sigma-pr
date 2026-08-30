@@ -90,27 +90,16 @@ describe('getSpendingTrend', () => {
   it('never computes YoY against a non-adjacent year when a whole year is missing', async () => {
     // Data for 2020 and 2022 only — 2021 is a gap year. 2022's YoY must NOT be computed against
     // 2020: the gap is zero-filled and the YoY lookup is strictly year-1, so 2022 yields null.
-    const db = {
-      prepare(sql: string) {
-        return {
-          bind() {
-            return this;
-          },
-          async all<T>() {
-            return {
-              results: [
-                { period: '2020', value_eur: 4000, contracts: 40 },
-                { period: '2022', value_eur: 5000, contracts: 50 },
-              ] as T[],
-            };
-          },
-          async first<T>() {
-            if (sql.includes('as_of')) return { as_of: null } as T;
-            return COVERAGE as T;
-          },
-        };
+    const { db } = fakeD1([
+      {
+        when: [],
+        all: [
+          { period: '2020', value_eur: 4000, contracts: 40 },
+          { period: '2022', value_eur: 5000, contracts: 50 },
+        ],
+        first: (call) => (call.sql.includes('as_of') ? { as_of: null } : COVERAGE),
       },
-    } as unknown as D1Database;
+    ]);
 
     const { years } = await getSpendingTrend(db, { granularity: 'year' });
     expect(years).toEqual([
@@ -140,27 +129,16 @@ describe('getSpendingTrend', () => {
   });
 
   it('excludes the current year by default at year grain', async () => {
-    const db = {
-      prepare(sql: string) {
-        return {
-          bind() {
-            return this;
-          },
-          async all<T>() {
-            return {
-              results: [
-                { period: '2022', value_eur: 4000, contracts: 40 },
-                { period: '2023', value_eur: 1500, contracts: 15 },
-              ] as T[],
-            };
-          },
-          async first<T>() {
-            if (sql.includes('as_of')) return { as_of: '2023-06-15' } as T;
-            return COVERAGE as T;
-          },
-        };
+    const { db } = fakeD1([
+      {
+        when: [],
+        all: [
+          { period: '2022', value_eur: 4000, contracts: 40 },
+          { period: '2023', value_eur: 1500, contracts: 15 },
+        ],
+        first: (call) => (call.sql.includes('as_of') ? { as_of: '2023-06-15' } : COVERAGE),
       },
-    } as unknown as D1Database;
+    ]);
     const { points, years } = await getSpendingTrend(db, { granularity: 'year' });
     expect(points.map((p) => p.period)).toEqual(['2022']);
     expect(years.map((y) => y.year)).toEqual(['2022']);
@@ -242,26 +220,13 @@ describe('getSpendingTrend', () => {
       { period: '2022', value_eur: 2000, eu_value_eur: 0, contracts: 20 },
       { period: '2023', value_eur: 1000, eu_value_eur: 0, contracts: 10 },
     ];
-    const calls: QueryCall[] = [];
-    const db = {
-      prepare(sql: string) {
-        return {
-          args: [] as unknown[],
-          bind(...args: unknown[]) {
-            this.args = args;
-            calls.push({ sql, args });
-            return this;
-          },
-          async all<T>() {
-            return { results: (this.args.includes('45233') ? FACETED : ALL) as T[] };
-          },
-          async first<T>() {
-            if (sql.includes('as_of')) return { as_of: null } as T;
-            return { dated: 10, total: 10 } as T;
-          },
-        };
+    const { db, calls } = fakeD1([
+      {
+        when: [],
+        all: (call) => (call.binds.includes('45233') ? FACETED : ALL),
+        first: (call) => (call.sql.includes('as_of') ? { as_of: null } : { dated: 10, total: 10 }),
       },
-    } as unknown as D1Database;
+    ]);
 
     const all = await getSpendingTrend(db, { granularity: 'year' }, { includeSectors: false });
     const faceted = await getSpendingTrend(
@@ -286,10 +251,10 @@ describe('getSpendingTrend', () => {
     expect(sql).toContain(
       '((t.cpv_code >= ? AND t.cpv_code < ?) OR (t.cpv_code >= ? AND t.cpv_code < ?))',
     );
-    expect(series[1]!.args).toEqual(['2020-01-01', '45233', '45234', '33600', '33601']);
+    expect(series[1]!.binds).toEqual(['2020-01-01', '45233', '45234', '33600', '33601']);
     // The unfaceted default is untouched: no join, no range params.
     expect(series[0]!.sql).not.toContain('JOIN tenders');
-    expect(series[0]!.args).toEqual(['2020-01-01']);
+    expect(series[0]!.binds).toEqual(['2020-01-01']);
   });
 
   it('ignores malformed CPV groups instead of joining tenders on garbage', async () => {
@@ -366,24 +331,20 @@ function overviewDb(handlers: {
   first?: (sql: string, args: unknown[]) => unknown;
   calls?: QueryCall[];
 }): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        args: [] as unknown[],
-        bind(...args: unknown[]) {
-          this.args = args;
-          handlers.calls?.push({ sql, args });
-          return this;
-        },
-        async all<T>() {
-          return { results: (handlers.all?.(sql, this.args) ?? []) as T[] };
-        },
-        async first<T>() {
-          return (handlers.first?.(sql, this.args) ?? null) as T;
-        },
-      };
+  const { db } = fakeD1([
+    {
+      when: [],
+      all: (call) => {
+        handlers.calls?.push({ sql: call.sql, args: call.binds });
+        return handlers.all?.(call.sql, call.binds) ?? [];
+      },
+      first: (call) => {
+        handlers.calls?.push({ sql: call.sql, args: call.binds });
+        return (handlers.first?.(call.sql, call.binds) ?? null) as object | null;
+      },
     },
-  } as unknown as D1Database;
+  ]);
+  return db;
 }
 
 describe('getCpvGroupStats', () => {

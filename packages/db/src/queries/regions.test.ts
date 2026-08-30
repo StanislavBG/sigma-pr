@@ -83,16 +83,8 @@ describe('getRegionalSpending', () => {
 });
 
 describe('getRegionHeadline', () => {
-  function fakeDb(rows: { region: string | null; value_eur: number }[]): D1Database {
-    return {
-      prepare() {
-        return {
-          async all<T>() {
-            return { results: rows as T[] };
-          },
-        };
-      },
-    } as unknown as D1Database;
+  function fakeDb(rows: { region: string | null; value_eur: number }[]): FakeD1 {
+    return fakeD1([{ when: 'FROM authority_totals GROUP BY region', all: rows }]);
   }
 
   it('reports the 28-region count and София-столица share of the attributed total', async () => {
@@ -102,7 +94,7 @@ describe('getRegionHeadline', () => {
         { region: 'Пловдив', value_eur: 3000 },
         { region: null, value_eur: 1000 }, // unattributed — EXCLUDED from the denominator
         { region: 'Несъществуваща област', value_eur: 5000 }, // unknown — also excluded
-      ]),
+      ]).db,
     );
     expect(h.regionCount).toBe(28);
     // sofiaShare = София value over the attributed total (6000 + 3000 only; the unattributed and
@@ -115,7 +107,7 @@ describe('getRegionHeadline', () => {
       fakeDb([
         { region: 'София', value_eur: 5000 }, // BG412 — not the capital
         { region: 'София (столица)', value_eur: 5000 }, // BG411
-      ]),
+      ]).db,
     );
     expect(h.sofiaShare).toBeCloseTo(0.5);
   });

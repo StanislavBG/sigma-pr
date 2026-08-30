@@ -125,24 +125,16 @@ describe('getFlows', () => {
 });
 
 describe('getFlowsHeadline', () => {
-  function fakeDb(row: { authorities: number; pairs: number } | null): D1Database {
-    return {
-      prepare() {
-        return {
-          async first<T>() {
-            return row as T;
-          },
-        };
-      },
-    } as unknown as D1Database;
+  function fakeDb(row: { authorities: number; pairs: number } | null): FakeD1 {
+    return fakeD1([{ when: 'FROM authority_totals', first: row }]);
   }
 
   it('returns the authority and flow-pair counts from the rollups', async () => {
-    const h = await getFlowsHeadline(fakeDb({ authorities: 4123, pairs: 88210 }));
+    const h = await getFlowsHeadline(fakeDb({ authorities: 4123, pairs: 88210 }).db);
     expect(h).toEqual({ authorities: 4123, pairs: 88210 });
   });
 
   it('defaults to zeroes when the rollups are empty', async () => {
-    expect(await getFlowsHeadline(fakeDb(null))).toEqual({ authorities: 0, pairs: 0 });
+    expect(await getFlowsHeadline(fakeDb(null).db)).toEqual({ authorities: 0, pairs: 0 });
   });
 });
