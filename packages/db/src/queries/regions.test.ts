@@ -237,9 +237,12 @@ describe('getRegionTopBeneficiaries', () => {
   it('uses a single bounded window-function query, not per-region round trips', async () => {
     const capture: { sql?: string } = {};
     await getRegionTopBeneficiaries(fakeBeneficiaryDb(capture), {});
-    expect(capture.sql).toContain(
-      'ROW_NUMBER() OVER (PARTITION BY a.region ORDER BY SUM(c.amount_eur) DESC)',
-    );
+    expect(capture.sql).toContain('ROW_NUMBER() OVER (');
+    expect(capture.sql).toContain('PARTITION BY a.region');
+    expect(capture.sql).toContain('SUM(c.amount_eur) DESC');
     expect(capture.sql).toContain('rn <= 3');
+    // A single LEFT JOIN pass, not a second scan of contracts/tenders/authorities for region_total.
+    expect(capture.sql).toContain('LEFT JOIN bidders');
+    expect(capture.sql?.match(/FROM contracts c/g)).toHaveLength(1);
   });
 });
