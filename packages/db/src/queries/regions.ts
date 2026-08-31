@@ -88,8 +88,12 @@ interface TopBeneficiaryRow {
 // the WHOLE partition (one pass, no second scan of contracts/tenders/authorities — D1 bills per
 // row scanned), while the outer filter excludes only the no-name group from being ranked/shown as
 // a "beneficiary" (ordering unmatched-bidder groups last means a large unattributed value can't
-// crowd a real company out of the top 3). Share is therefore read against the region's full
-// value, matching the "Стойност" figure shown elsewhere on the same card (getRegionalSpending).
+// crowd a real company out of the top 3). Share is therefore read against this query's own
+// SUM(c.amount_eur) region total, computed the same way regionRows() computes it in the FILTERED
+// path. Caveat: getRegionalSpending's UNFILTERED path instead reads the materialized
+// authority_totals.spent_eur rollup — the two are refreshed together by the ETL and expected to
+// agree, but nothing at query time enforces that equality, so a staleness/drift in that rollup
+// would show this share against a slightly different "Стойност" than the unfiltered card figure.
 export async function getRegionTopBeneficiaries(
   db: D1Database,
   p: RegionalParams,
