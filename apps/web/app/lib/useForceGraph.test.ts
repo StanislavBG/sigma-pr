@@ -79,7 +79,7 @@ describe('isDragGesture', () => {
     expect(isDragGesture({ x: 0, y: 0 }, { x: 2, y: 0 })).toBe(false);
   });
 
-  it('travel right at clickDistance is not yet a drag (matches d3-drag\'s own > comparison)', () => {
+  it("travel right at clickDistance is not yet a drag (matches d3-drag's own > comparison)", () => {
     expect(isDragGesture({ x: 0, y: 0 }, { x: CLICK_DISTANCE, y: 0 })).toBe(false);
   });
 
