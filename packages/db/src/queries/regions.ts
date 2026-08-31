@@ -81,29 +81,46 @@ interface TopBeneficiaryRow {
   region_total: number;
 }
 
-// Top 3 bidder companies per NUTS3 region by awarded value, plus each one's share of that
-// region's total value. One bounded query using a window function (nested-subquery
-// ROW_NUMBER()-per-partition pattern), not N per-region round trips.
+// Top 3 bidder companies per NUTS3 region by awarded value, plus each one's share of the
+// region's TRUE total value (every contract in the region, including ones whose bidder_id has
+// no matching `bidders` row and would otherwise be silently dropped by the INNER JOIN below).
+// `region_total` therefore comes from a separate unjoined-by-bidder subquery, not from summing
+// the joined bidder rows — those two are NOT the same number whenever a region has such
+// contracts, and the share must be read against the region's full value, matching the "Стойност"
+// figure shown elsewhere on the same card (getRegionalSpending). One bounded query using a
+// window function (nested-subquery ROW_NUMBER()-per-partition pattern) plus a joined total
+// subquery, not N per-region round trips.
 export async function getRegionTopBeneficiaries(
   db: D1Database,
   p: RegionalParams,
 ): Promise<Map<string, RegionTopBeneficiary[]>> {
   const { where, params } = scopeFilters(p);
   where.push('a.region IS NOT NULL');
+  const whereSql = where.join(' AND ');
   const { results } = await db
     .prepare(
-      `SELECT region, bidder_id, name, value_eur, region_total FROM (
-         SELECT a.region AS region, c.bidder_id AS bidder_id, b.name AS name,
-                SUM(c.amount_eur) AS value_eur,
-                SUM(SUM(c.amount_eur)) OVER (PARTITION BY a.region) AS region_total,
-                ROW_NUMBER() OVER (PARTITION BY a.region ORDER BY SUM(c.amount_eur) DESC) AS rn
-         FROM contracts c JOIN tenders t ON t.id = c.tender_id
-              JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
-         WHERE ${where.join(' AND ')}
-         GROUP BY a.region, c.bidder_id
-       ) WHERE rn <= 3 ORDER BY region, rn`,
+      `SELECT bt.region AS region, bt.bidder_id AS bidder_id, bt.name AS name,
+              bt.value_eur AS value_eur, rt.region_total AS region_total
+       FROM (
+         SELECT region, bidder_id, name, value_eur, rn FROM (
+           SELECT a.region AS region, c.bidder_id AS bidder_id, b.name AS name,
+                  SUM(c.amount_eur) AS value_eur,
+                  ROW_NUMBER() OVER (PARTITION BY a.region ORDER BY SUM(c.amount_eur) DESC) AS rn
+           FROM contracts c JOIN tenders t ON t.id = c.tender_id
+                JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
+           WHERE ${whereSql}
+           GROUP BY a.region, c.bidder_id
+         ) WHERE rn <= 3
+       ) bt
+       JOIN (
+         SELECT a.region AS region, SUM(c.amount_eur) AS region_total
+         FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id = t.authority_id
+         WHERE ${whereSql}
+         GROUP BY a.region
+       ) rt ON rt.region = bt.region
+       ORDER BY bt.region, bt.rn`,
     )
-    .bind(...params)
+    .bind(...params, ...params)
     .all<TopBeneficiaryRow>();
 
   const byNuts3 = new Map<string, RegionTopBeneficiary[]>();
