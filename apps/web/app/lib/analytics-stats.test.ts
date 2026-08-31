@@ -151,8 +151,10 @@ describe('estimateYoyGrowth', () => {
       ...year(2024, 54, 26), // +15%
     ];
     const g = estimateYoyGrowth(points);
-    // Endpoint CAGR / geometric mean would carry the spike forward at ~+52%/yr ((54/10)^(1/4)≈1.52);
-    // the median of the four ratios lands on the genuine sustainable ~+15%.
+    // Endpoint CAGR / geometric mean would carry the spike forward at ~+52%/yr ((54/10)^(1/4)≈1.52).
+    // GROWTH_TRAILING_YEARS = 3 keeps only the last three complete years (2022-2024), so the 2020→2021
+    // spike is excluded by the sliding window itself, not by the median — the median of the resulting
+    // two ratios (~+14%, ~+15%) lands on the genuine sustainable ~+15%.
     expect(g.value).toBeGreaterThan(1.1);
     expect(g.value).toBeLessThan(1.25);
   });
