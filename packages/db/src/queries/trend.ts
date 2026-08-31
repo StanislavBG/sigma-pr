@@ -49,7 +49,11 @@ export interface TrendQueryOptions {
   includeSectors?: boolean;
 }
 
-const START = '2020-01-01';
+// The corpus's known-good coverage start: earlier signings are the open-data feed's sparse
+// backfill era, not a real reflection of procurement volume. Shared with getOpaqueShareByYear
+// (queries/competition.ts), which needs the same floor for its own year-bucketed aggregate.
+export const CORPUS_START_DATE = '2020-01-01';
+const START = CORPUS_START_DATE;
 // A real signing year is YYYY at the head of signed_at; null/malformed dates are excluded from the
 // series (and counted as undated for coverage). Mirrors the check in queries/contracts.ts.
 const YEAR_KNOWN = "substr(c.signed_at, 1, 4) GLOB '[0-9][0-9][0-9][0-9]'";

@@ -24,6 +24,7 @@ import { cleanName, entityName } from '@sigma/shared';
 import { authoritySlug, companySlug } from './identity';
 import { typeLabel } from './rows';
 import { sectorOptions } from './sectors';
+import { CORPUS_START_DATE } from './trend';
 
 export interface CompetitionParams {
   sector?: string | null;
@@ -481,7 +482,7 @@ export async function getOpaqueShareByYear(db: D1Database): Promise<OpaqueYearRo
          AND c.bids_received IS NOT NULL AND c.bids_received >= 1
          AND substr(c.signed_at, 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
          -- Year-boundary bounds, colocated so they read together (lower bound above, upper below).
-         AND c.signed_at >= '2020-01-01'
+         AND c.signed_at >= '${CORPUS_START_DATE}'
          -- strftime('%Y', 'now') resolves in UTC, so right around New Year's this can differ from a
          -- caller's local calendar year by one day; negligible here since the clause only excludes the
          -- current (incomplete) year, which is already excluded regardless of the exact boundary.
