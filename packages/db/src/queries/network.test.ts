@@ -159,6 +159,18 @@ describe('getEntityNetwork', () => {
     expect(edges).toHaveLength(4); // C->A, C->B, A->X, B->X
   });
 
+  it('tiebreaks the hop-1 draw by neighbour id, same as getEntityCounterparties page 1 (review #144)', async () => {
+    // Without an id tiebreak, two flow_pairs rows tied on won_eur could draw in a different order
+    // than the counterparties table's first page (keyset on won_eur DESC, <neighbour id>) — the
+    // graph and the table would then disagree on which of a tied pair is "top". Assert the hop-1
+    // SQL orders by the same (won_eur DESC, neighbourCol) pair the keyset query uses.
+    const authCapture = fake();
+    await getEntityNetwork(authCapture.db, { kind: 'authority', id: 'auth:C' });
+    expect(authCapture.sql.some((s) => s.includes('ORDER BY won_eur DESC, bidder_id LIMIT'))).toBe(
+      true,
+    );
+  });
+
   it('alternates kinds by hop (authority centre -> company hop1 -> authority hop2)', async () => {
     const { nodes } = await getEntityNetwork(fake().db, { kind: 'authority', id: 'auth:C' });
     const byId = new Map(nodes.map((n) => [n.id, n]));
