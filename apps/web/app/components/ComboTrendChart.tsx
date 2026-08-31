@@ -45,7 +45,12 @@ export function ComboTrendChart({
   const x = (i: number) => (n > 1 ? PAD + (i * (W - 2 * PAD)) / (n - 1) : W / 2);
   const yV = (v: number) => BOT - (v / vMax) * (BOT - TOP);
   const yC = (c: number) => BOT - (c / cMax) * (BOT - TOP) * 0.62;
-  const bw = Math.max(2, ((W - 2 * PAD) / n) * 0.66);
+  // Bar width from point spacing, not point count — point spacing is (W-2*PAD)/(n-1); deriving width
+  // from n instead overshoots at small n. Even spacing-derived width can still push an edge bar (whose
+  // center sits only PAD from the viewBox edge) outside it, so bwHalf additionally clamps each bar's
+  // half-width to the room actually available on either side of its center.
+  const bw = Math.max(2, ((W - 2 * PAD) / (n - 1)) * 0.66);
+  const bwHalf = (i: number) => Math.min(bw / 2, x(i), W - x(i));
 
   // Final period is partial (still filling): dashed line tail + faded bar, like TrendChart.
   const partialIdx = points.findIndex((p) => p.partial);
@@ -90,9 +95,9 @@ export function ComboTrendChart({
           <rect
             key={p.period}
             className={`combo-bar${hover === i ? ' is-hover' : ''}${p.partial ? ' is-partial' : ''}`}
-            x={(x(i) - bw / 2).toFixed(1)}
+            x={(x(i) - bwHalf(i)).toFixed(1)}
             y={yC(p.contracts).toFixed(1)}
-            width={bw.toFixed(1)}
+            width={(bwHalf(i) * 2).toFixed(1)}
             height={(BOT - yC(p.contracts)).toFixed(1)}
             onMouseEnter={interactive ? () => setHover(i) : undefined}
           />
