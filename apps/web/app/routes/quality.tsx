@@ -185,14 +185,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 /** 0–100 display of a [0,1] score; „—" when unknown (never a fabricated 0). */
-function score100(s: number | null | undefined): string {
+export function score100(s: number | null | undefined): string {
   return s == null ? '—' : String(Math.round(s * 100));
 }
 
-function band(s: number | null | undefined): 'good' | 'mid' | 'weak' | 'unknown' {
+// Classifies against the SAME rounded 0–100 value score100() displays, so the label and the
+// color/zone can never disagree at a boundary (e.g. raw 0.695 rounds to "70", which must land in
+// "good" since the methodology documents 70–100 as good, not "mid" from the raw 0.695 < 0.7).
+export function band(s: number | null | undefined): 'good' | 'mid' | 'weak' | 'unknown' {
   if (s == null) return 'unknown';
-  if (s >= 0.7) return 'good';
-  if (s >= 0.5) return 'mid';
+  const p = Math.round(s * 100);
+  if (p >= 70) return 'good';
+  if (p >= 50) return 'mid';
   return 'weak';
 }
 
