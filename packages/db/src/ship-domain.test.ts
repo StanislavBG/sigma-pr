@@ -90,4 +90,59 @@ Description line 2', 'test');
       rmSync(dir, { recursive: true, force: true });
     }
   }, 240_000);
+
+  // Regression for the missing `await` on the contract-features gate (scripts/ship-domain.mjs:248):
+  // without it, assertIntegrity's process.exit(1)/throw fires asynchronously after the script has
+  // already moved on to the next console.log stage, so a broken contract_features table could ship.
+  // A tender with a procedure_type outside the §12.2 21-value vocabulary makes
+  // checkContractFeaturesIntegrity fail deterministically (unmapped_procedure_rows > 0) without
+  // disturbing row counts, so this isolates the gate-ordering bug from unrelated derive logic.
+  it('aborts before the served-D1 gate when the contract-features invariant is violated', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'sigma-ship-domain-gate-'));
+    const workDb = resolve(dir, 'work.sqlite');
+    const persistTo = resolve(dir, 'served');
+    try {
+      const migrationsDir = resolve(root, 'packages/db/migrations');
+      for (const f of readdirSync(migrationsDir)
+        .filter((n) => n.endsWith('.sql'))
+        .sort()) {
+        readScript(workDb, resolve(migrationsDir, f));
+      }
+      sqlite(
+        workDb,
+        `INSERT INTO authorities (id, name, bulstat, type) VALUES ('auth:1', 'Authority', '1', 'public');
+         INSERT INTO bidders (id, name, bulstat, eik_normalized, eik_valid, kind) VALUES ('eik:200000007', 'Bidder', '200000007', '200000007', 1, 'company');
+         INSERT INTO tenders (id, source_id, title, authority_id, currency, procedure_type, status) VALUES ('t:1', '1', 'Tender', 'auth:1', 'BGN', 'Bogus unmapped procedure type', 'awarded');
+         INSERT INTO contracts (id, tender_id, bidder_id, amount, currency, contract_number, signing_value, value_flag, amount_eur) VALUES ('c:e:1', 't:1', 'eik:200000007', 10, 'BGN', 'C1', 10, 'ok', 10 / 1.95583);
+         INSERT INTO nuts_regions (nuts3, nuts3_name, nuts2, nuts2_name, nuts1, nuts1_name)
+           VALUES ('BG000', 'Region', 'BG00', 'Region 2', 'BG0', 'Region 1');
+         INSERT INTO data_freshness (source, rows, refreshed_at) VALUES ('eop', 1, '2026-06-08');`,
+      );
+
+      let error: (Error & { status?: number; stdout?: Buffer; stderr?: Buffer }) | undefined;
+      try {
+        execFileSync(
+          'node',
+          ['scripts/ship-domain.mjs', `--work-db=${workDb}`, `--persist-to=${persistTo}`],
+          { cwd: root, stdio: 'pipe', maxBuffer: 128 * 1024 * 1024 },
+        );
+      } catch (err) {
+        error = err as Error & { status?: number; stdout?: Buffer; stderr?: Buffer };
+      }
+
+      expect(error, 'ship-domain.mjs should exit non-zero on a violated contract-features invariant')
+        .toBeDefined();
+      expect(error?.status).toBe(1);
+      const stdout = String(error?.stdout ?? '');
+      const stderr = String(error?.stderr ?? '');
+      expect(stdout).toContain('==> contract-features integrity gate on served D1');
+      expect(stderr).toContain('integrity gate failed');
+      // The gate must stop the ship BEFORE the next stage runs — the later reconciliation gate's
+      // banner (and ship completion) must never print.
+      expect(stdout).not.toContain('==> integrity gate on served D1');
+      expect(stdout).not.toContain('==> ship complete');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
 });

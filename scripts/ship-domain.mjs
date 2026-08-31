@@ -245,7 +245,7 @@ d1File(resolve(root, 'scripts/derive-contract-features.sql'));
 // SELECT was only ever displayed by `wrangler d1 execute`, never asserted. Gate it the same way
 // as the #97 reconciliation check below, right after the derive that computes it.
 console.log('==> contract-features integrity gate on served D1');
-assertIntegrity(d1Json, {
+await assertIntegrity(d1Json, {
   label: `contract_features ${remote ? 'remote' : 'local'}`,
   checks: [checkContractFeaturesIntegrity],
 });
