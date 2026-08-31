@@ -80,6 +80,16 @@ describe('opaqueHeadline / formatPpChange', () => {
     expect(opaqueHeadline([{ year: '2020', valueEur: 0, singleOfferValueEur: 0 }])).toBeNull();
     expect(opaqueHeadline([])).toBeNull();
   });
+  it('returns null when only a single usable year is on record (no distinct prior year)', () => {
+    expect(opaqueHeadline([{ year: '2020', valueEur: 1000, singleOfferValueEur: 200 }])).toBeNull();
+    // A second row with no value doesn't count as a second usable year.
+    expect(
+      opaqueHeadline([
+        { year: '2019', valueEur: 0, singleOfferValueEur: 0 },
+        { year: '2020', valueEur: 1000, singleOfferValueEur: 200 },
+      ]),
+    ).toBeNull();
+  });
   it('formats a percentage-point swing', () => {
     expect(formatPpChange(0.15)).toBe('+15 пр.п.');
     expect(formatPpChange(-0.03)).toBe('−3 пр.п.');

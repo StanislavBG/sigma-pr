@@ -88,10 +88,12 @@ export interface OpaqueHeadline {
 }
 
 // Single-offer value share for the latest and first years on record, plus the percentage-point swing
-// between them. Years with no value are dropped (their share is undefined); null when nothing remains.
+// between them. Years with no value are dropped (their share is undefined); null when nothing remains
+// or only a single usable year is on record (no distinct prior year to compare against — comparing a
+// year to itself would read as a real swing when there is none).
 export function opaqueHeadline(rows: OpaqueShareYear[]): OpaqueHeadline | null {
   const usable = rows.filter((r) => r.valueEur > 0).sort((a, b) => a.year.localeCompare(b.year));
-  if (usable.length === 0) return null;
+  if (usable.length < 2) return null;
   const first = usable[0]!;
   const last = usable[usable.length - 1]!;
   // singleOfferValueEur can exceed valueEur (or dip below 0) on dirty source rows — clamp so the

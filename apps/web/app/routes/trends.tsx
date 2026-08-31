@@ -49,6 +49,10 @@ const STEP_GRANULARITY: Record<Step, TrendGranularity> = {
   y: 'year',
 };
 
+// Kept in sync with the "(показани първите N)" truncation label below — a shared constant so the
+// list cap and the label can never drift apart.
+const CONTRACTS_LIST_LIMIT = 24;
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sp = new URL(request.url).searchParams;
   const db = getDb(context.cloudflare.env);
@@ -72,7 +76,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // The cross lens always shows the compact quarterly picker; the time lens follows the step toggle.
   const granularity = angle === 'cross' ? 'quarter' : STEP_GRANULARITY[step];
 
-  const [trend, stats, contracts] = await Promise.all([
+  const [trend, stats, fetchedContracts] = await Promise.all([
     // Faceted by the selected CPV groups (one aggregate scan; all groups when nothing is selected),
     // so the combo chart, year cards and totals all re-run server-side on real data.
     getSpendingTrend(
@@ -81,8 +85,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       { includeSectors: false },
     ),
     getCpvGroupStats(db, 10),
-    listOverviewContracts(db, { year, cpvGroups: cpvSel, sort, limit: 24 }),
+    // Fetch one extra row so truncation can be detected exactly — otherwise a corpus with precisely
+    // CONTRACTS_LIST_LIMIT matches would show the "(показани първите N)" label despite no real cut.
+    listOverviewContracts(db, { year, cpvGroups: cpvSel, sort, limit: CONTRACTS_LIST_LIMIT + 1 }),
   ]);
+  const contractsTruncated = fetchedContracts.length > CONTRACTS_LIST_LIMIT;
+  const contracts = contractsTruncated
+    ? fetchedContracts.slice(0, CONTRACTS_LIST_LIMIT)
+    : fetchedContracts;
 
   // „Спрямо типичното" baselines for card groups outside the top-N stats (bounded: distinct groups
   // on one card page, plus the selected group so its filter chip can carry a name).
@@ -94,7 +104,20 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const missing = [...new Set(missingList)];
   const medians = missing.length ? await getCpvGroupMedians(db, missing) : [];
 
-  return { angle, step, sort, cpvSort, year, cpvSel, cur, trend, stats, contracts, medians };
+  return {
+    angle,
+    step,
+    sort,
+    cpvSort,
+    year,
+    cpvSel,
+    cur,
+    trend,
+    stats,
+    contracts,
+    contractsTruncated,
+    medians,
+  };
 }
 
 // ── Presentational helpers ────────────────────────────────────────────────────────────────────────
@@ -199,8 +222,20 @@ function DistAxis({ gMax }: { gMax: number }) {
 // ── Page ──────────────────────────────────────────────────────────────────────────────────────────
 
 export default function Trends({ loaderData }: Route.ComponentProps) {
-  const { angle, step, sort, cpvSort, year, cpvSel, cur, trend, stats, contracts, medians } =
-    loaderData;
+  const {
+    angle,
+    step,
+    sort,
+    cpvSort,
+    year,
+    cpvSel,
+    cur,
+    trend,
+    stats,
+    contracts,
+    contractsTruncated,
+    medians,
+  } = loaderData;
   const [sp] = useSearchParams();
   const navigating = useNavigation().state !== 'idle';
 
@@ -565,7 +600,8 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
               </h2>
               <p className="ov-panel-hint">
                 {count(contracts.length)} {plural(contracts.length, 'договор', 'договора')}
-                {contracts.length === 24 ? ' (показани първите 24)' : ''} · {scopeText}
+                {contractsTruncated ? ` (показани първите ${CONTRACTS_LIST_LIMIT})` : ''} ·{' '}
+                {scopeText}
               </p>
             </div>
             <div className="ov-panel-tools">
