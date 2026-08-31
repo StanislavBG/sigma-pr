@@ -56,6 +56,21 @@ describe('CopyCitationButton', () => {
     expect(screen.getByRole('button').getAttribute('aria-label')).toBeNull();
   });
 
+  it('does not log to console.error when the execCommand fallback succeeds after writeText rejects', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.assign(navigator, { clipboard: { writeText } });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.assign(document, { execCommand });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(<CopyCitationButton textToCopy="hello" />);
+    fireEvent.click(screen.getByRole('button'));
+
+    await screen.findByText('Копирано!');
+    expect(screen.getByRole('button').className).toContain('is-copied');
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
   it('reports failed when execCommand throws while navigator.clipboard is unavailable', async () => {
     Object.assign(navigator, { clipboard: undefined });
     Object.assign(document, {

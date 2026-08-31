@@ -52,7 +52,6 @@ export function CopyCitationButton({ textToCopy }: { textToCopy: string }) {
           resetAfterDelay();
         })
         .catch((err) => {
-          console.error('Failed to copy text:', err);
           if (!mountedRef.current) return;
           // execCommand('copy') here runs after an awaited promise rejection, so in some
           // browsers the original click's user-gesture context may already be gone by this
@@ -61,7 +60,9 @@ export function CopyCitationButton({ textToCopy }: { textToCopy: string }) {
           // in that case, and writeText (tried first, above) is the modern/preferred path that
           // succeeds in the overwhelming majority of real browsers — so this ordering is kept
           // rather than reversing the priority to chase a rarer edge case.
-          setStatus(copyWithExecCommand(textToCopy) ? 'copied' : 'failed');
+          const ok = copyWithExecCommand(textToCopy);
+          if (!ok) console.error('Failed to copy text:', err);
+          setStatus(ok ? 'copied' : 'failed');
           resetAfterDelay();
         });
       return;
