@@ -15,6 +15,7 @@
 - [`implementation-plans/305-amendment-value-double-count.md`](implementation-plans/305-amendment-value-double-count.md) — защо стойността на анекс се удвоява (ЦАИС ЕОП слага новия **тотал** в полето за промяна) и планът за откриване/поправка: `annex_total_suspect` флаг + текстова хеуристика за възстановяване на истинския тотал (#305).
 - [`implementation-plans/287-conflicts-person-table.md`](implementation-plans/287-conflicts-person-table.md) — преработка на `/conflicts` от карта-на-връзка към `DataTable` с ред-на-лице, преместване на детайлите на страницата на лицето/дружеството и поправка на подвеждащия текст „само собствен дял" (ADR-0032) (#287).
 - [`integrity-gate.md`](integrity-gate.md) — reconciliation gate-ът: hard asserts върху тоталите при import/CI.
+- [`ci-ship-domain-test-execution.md`](ci-ship-domain-test-execution.md) — доказателство (CI лог, job id) че `ship-domain.test.ts` реално се изпълнява в CI, не се пропуска; обяснение на runtime разликата 68.5s CI vs 200-350s локално.
 - [`anomaly-report.md`](anomaly-report.md) — cross-row аномалии при опресняване: какво `value_flag` не хваща на ниво отделен договор.
 - [`deploy.md`](deploy.md) — деплой към Cloudflare: двата Worker-а (`sigma`, `sigma-etl`) и споделеният D1 per environment.
 - [`dev-environments.md`](dev-environments.md) — дълготрайната **dev** среда и ephemeral preview-та за всеки PR: как се деплойва произволен branch.
