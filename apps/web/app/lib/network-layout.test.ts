@@ -5,6 +5,7 @@ import {
   forceConfig,
   GEOMETRY,
   labelPositions,
+  labelPositionsExcluding,
   ringRadius,
   seedPositions,
   type Pt,
@@ -106,6 +107,30 @@ describe('labelPositions', () => {
     // Opposite sides do not collide, so neither is pushed off its node's y.
     expect(labelY.get('L')).toBe(100);
     expect(labelY.get('R')).toBe(101);
+  });
+});
+
+describe('labelPositionsExcluding', () => {
+  it("excludes the given id entirely, so it can never push a real label's offset around", () => {
+    const pos = new Map<string, Pt>([
+      ['centre', { x: GEOMETRY.CX + 5, y: 100 }], // no rendered label, but occupies this slot
+      ['n1', { x: GEOMETRY.CX + 50, y: 101 }],
+    ]);
+    // Without exclusion, 'centre' and 'n1' are close enough in y on the same side to collide, and n1
+    // gets pushed to clear LABEL_GAP from it.
+    const withCentre = labelPositions(pos);
+    expect(withCentre.get('n1')).toBeGreaterThanOrEqual(100 + GEOMETRY.LABEL_GAP);
+
+    // Excluding 'centre' removes it as a collision source: n1 is the only node on its side and keeps
+    // its own y — unchanged whether or not the excluded node is present in `pos`.
+    const excluded = labelPositionsExcluding(pos, 'centre');
+    expect(excluded.get('n1')).toBe(101);
+    expect(excluded.has('centre')).toBe(false);
+  });
+
+  it('is a no-op when the given id is not present in pos', () => {
+    const pos = new Map<string, Pt>([['n1', { x: GEOMETRY.CX + 50, y: 101 }]]);
+    expect(labelPositionsExcluding(pos, 'not-there')).toEqual(labelPositions(pos));
   });
 });
 

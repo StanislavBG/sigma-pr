@@ -94,6 +94,20 @@ export function labelPositions(
   return labelY;
 }
 
+// The centre node has no rendered label (only non-centre nodes get one) but still occupies a slot in
+// `pos` — feeding it into labelPositions could push a real label down to avoid space that will never
+// actually be drawn. Excludes it entirely rather than leaving it in as an unlabeled collision source.
+export function labelPositionsExcluding(
+  pos: Map<string, Pt>,
+  excludeId: string,
+  geom: Geometry = GEOMETRY,
+): Map<string, number> {
+  if (!pos.has(excludeId)) return labelPositions(pos, geom);
+  const filtered = new Map(pos);
+  filtered.delete(excludeId);
+  return labelPositions(filtered, geom);
+}
+
 export interface ForceConfig {
   charge: number; // many-body strength (negative = repulsion)
   linkDistance: (hop: number) => number; // target edge length by the more-peripheral endpoint's hop

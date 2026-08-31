@@ -8,7 +8,7 @@ import {
   isAdoptableNetwork,
   relationsDisplay,
 } from '../lib/network-center';
-import { GEOMETRY, labelPositions } from '../lib/network-layout';
+import { GEOMETRY, labelPositionsExcluding } from '../lib/network-layout';
 import { useForceGraph } from '../lib/useForceGraph';
 
 // Server-rendered radial ego graph (no chart JS, like SankeyDiagram). Centre in the middle, direct
@@ -30,7 +30,7 @@ import { useForceGraph } from '../lib/useForceGraph';
 // — same static positions, same <a> fallbacks; the physics only ever starts in a post-mount effect
 // (see useForceGraph). The drawing geometry (radius, ring radii, seed, label collision) lives in
 // ../lib/network-layout so SSR and the sim seed share one source of truth.
-const { W, H, CX } = GEOMETRY;
+const { W, H, CX, CY } = GEOMETRY;
 // Palette tokens only: the centre is the accent, authorities and companies sit on the ink scale and
 // are told apart by shape (circle vs square) + the legend, not by an off-palette blue/green pair.
 const CENTER_FILL = 'var(--accent)'; // centre (focus)
@@ -135,7 +135,7 @@ export function NetworkGraph({ data }: { data: NetworkData }) {
   if (!center || nodes.length < 2) return null;
 
   const pos = positions;
-  const labelY = labelPositions(pos);
+  const labelY = labelPositionsExcluding(pos, center.id);
 
   // Hover emphasis: the focused node + its direct neighbours stay lit, everything else dims, and the
   // side card shows the focused node. `hovering` is true only for a node that exists in the CURRENT
@@ -283,10 +283,12 @@ export function NetworkGraph({ data }: { data: NetworkData }) {
                 // A near-vertical edge would rotate the label to read bottom-to-top (and clip against the
                 // viewBox), so for steep edges keep the text horizontal and push it further to the side.
                 const steep = Math.abs(deg) > 55;
-                // Bias the label toward the OUTER node (`to` is always the more-peripheral endpoint) so the
-                // labels of the spokes radiating from the hub fan out instead of piling up on the centre,
-                // and nudge it off the line along the perpendicular.
-                const t = 0.62;
+                // Bias the label toward the OUTER node so the labels of the spokes radiating from the hub
+                // fan out instead of piling up on the centre. Edge orientation is arbitrary (see
+                // countDirectEdges/linkHop) — `to` is not guaranteed to be the more-peripheral endpoint —
+                // so pick the outer one by actual distance from the centre rather than assuming it's `b`.
+                const outerIsB = Math.hypot(b.x - CX, b.y - CY) >= Math.hypot(a.x - CX, a.y - CY);
+                const t = outerIsB ? 0.62 : 0.38;
                 const off = steep ? 24 : 10;
                 const lx = a.x + dx * t + (-dy / L) * off;
                 const ly = a.y + dy * t + (dx / L) * off;

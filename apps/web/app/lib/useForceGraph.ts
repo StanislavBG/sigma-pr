@@ -237,16 +237,24 @@ export function useForceGraph({
         draggedRef.current = false;
         dragOriginRef.current = { x: event.x, y: event.y };
         if (!event.active) sim.alphaTarget(0.3).restart();
-        event.subject.fx = event.subject.x;
-        event.subject.fy = event.subject.y;
+        // Mirror the `hop !== 0` guard in `end` (below): the centre is never marked draggable in
+        // NetworkGraph (see `data-draggable="1"`), so this never fires for it today — but pinning it
+        // here without the matching guard there would leave it permanently fx/fy-pinned off-centre if
+        // that invariant ever drifted.
+        if (event.subject.hop !== 0) {
+          event.subject.fx = event.subject.x;
+          event.subject.fy = event.subject.y;
+        }
       })
       .on('drag', (event) => {
         // d3 fires a `drag` event on every pointer move, including the sub-pixel tremor under a tap —
         // only flip to "this was a drag" once total travel actually crosses the click threshold, so a
         // 1-3px tremor still re-centres via the node's onClick instead of being treated as a drag.
         if (isDragGesture(dragOriginRef.current, event)) draggedRef.current = true;
-        event.subject.fx = event.x;
-        event.subject.fy = event.y;
+        if (event.subject.hop !== 0) {
+          event.subject.fx = event.x;
+          event.subject.fy = event.y;
+        }
       })
       .on('end', (event) => {
         if (!event.active) sim.alphaTarget(0);
