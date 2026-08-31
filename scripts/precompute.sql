@@ -214,8 +214,12 @@ FROM (
 GROUP BY division;
 
 -- ── 5) flow_pairs (per authority → bidder) ──────────────────────────────────────────────────────
--- flow_pairs is a precompute artifact (no migration manages it): DROP first so a served D1 that
--- already has the table picks up first_date/last_date, not just a no-op CREATE IF NOT EXISTS.
+-- flow_pairs ships in 0000_init.sql and picks up first_date/last_date via migration 0012 (an
+-- ALTER, since SQLite has no ADD COLUMN IF NOT EXISTS) — but a served D1 whose 0012 predates this
+-- fix would still have the OLD shape, so DROP first to guarantee the columns exist either way. DROP
+-- also removes 0000_init's idx_flow_pairs_won/idx_flow_pairs_authority and 0001's
+-- idx_flow_pairs_bidder, so all three are recreated below — a served D1 must never end a precompute
+-- run with fewer indexes than the migration chain gives a fresh one.
 DROP TABLE IF EXISTS flow_pairs;
 CREATE TABLE IF NOT EXISTS flow_pairs (
   authority_id TEXT NOT NULL REFERENCES authorities(id), bidder_id TEXT NOT NULL REFERENCES bidders(id),
@@ -231,6 +235,9 @@ FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id
 JOIN bidders b ON b.id = c.bidder_id
 WHERE c.amount_eur IS NOT NULL
 GROUP BY t.authority_id, c.bidder_id;
+CREATE INDEX IF NOT EXISTS idx_flow_pairs_won ON flow_pairs(won_eur DESC);
+CREATE INDEX IF NOT EXISTS idx_flow_pairs_authority ON flow_pairs(authority_id);
+CREATE INDEX IF NOT EXISTS idx_flow_pairs_bidder ON flow_pairs(bidder_id);
 
 -- ── 6) search_index (FTS5; Cyrillic+Latin, accent/case-folded) ─────────────────────────────────────
 -- ref stores the RAW domain id; the app maps it to a route slug. title/ident are searchable; the

@@ -646,6 +646,52 @@ describe('refresh-slice EOP base derivation', () => {
     }
   });
 
+  it('recovers a served flow_pairs table created under the OLD (pre-0012) schema', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-flowpairs-'));
+    const dbPath = resolve(dir, 'test.sqlite');
+    try {
+      for (const migration of migrationPaths) readScript(dbPath, migration);
+      readScript(dbPath, workStagingSchemaPath);
+      // Simulate a served D1 whose flow_pairs predates migration 0012 — no first_date/last_date,
+      // and none of the three indexes the current migration chain gives a fresh DB.
+      sqlite(
+        dbPath,
+        `DROP TABLE flow_pairs;
+         CREATE TABLE flow_pairs (
+           authority_id TEXT NOT NULL REFERENCES authorities(id),
+           bidder_id TEXT NOT NULL REFERENCES bidders(id),
+           authority_name TEXT NOT NULL, bidder_name TEXT NOT NULL, bidder_kind TEXT NOT NULL,
+           won_eur REAL NOT NULL, contracts INTEGER NOT NULL,
+           PRIMARY KEY (authority_id, bidder_id)
+         );`,
+      );
+      seedEopBaseDay(dbPath);
+
+      readScript(dbPath, refreshSlicePath);
+
+      const row = sqliteJson<{ first_date: string | null; last_date: string | null }>(
+        dbPath,
+        'SELECT first_date, last_date FROM flow_pairs LIMIT 1',
+      )[0];
+      expect(row?.first_date).toBe('2026-06-02');
+      expect(row?.last_date).toBe('2026-06-02');
+      for (const index of [
+        'idx_flow_pairs_won',
+        'idx_flow_pairs_authority',
+        'idx_flow_pairs_bidder',
+      ]) {
+        expect(
+          sqliteJson<{ n: number }>(
+            dbPath,
+            `SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name = '${index}' AND tbl_name = 'flow_pairs'`,
+          )[0]?.n,
+        ).toBe(1);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('bridges an OCDS-only annex to its УНП on the slice path (issue #286)', () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-ocds-'));
     const dbPath = resolve(dir, 'test.sqlite');

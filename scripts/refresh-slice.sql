@@ -2483,6 +2483,19 @@ WHERE cca.authority_id IN (SELECT authority_id FROM refresh_touched_authorities)
 GROUP BY cca.authority_id;
 
 -- @refresh-batch flow-pairs
+-- Two-path parity with scripts/precompute.sql: this batch already fully recomputes flow_pairs (no
+-- touched-set scoping below), so the DROP+CREATE is exactly as safe here as in precompute.sql — it
+-- guarantees first_date/last_date exist on a served D1 whose flow_pairs predates migration 0012,
+-- instead of INSERTing into columns a stale table doesn't have. DROP removes 0000_init's
+-- idx_flow_pairs_won/idx_flow_pairs_authority and 0001's idx_flow_pairs_bidder, so all three are
+-- recreated below, same as precompute.sql.
+DROP TABLE IF EXISTS flow_pairs;
+CREATE TABLE IF NOT EXISTS flow_pairs (
+  authority_id TEXT NOT NULL REFERENCES authorities(id), bidder_id TEXT NOT NULL REFERENCES bidders(id),
+  authority_name TEXT NOT NULL, bidder_name TEXT NOT NULL, bidder_kind TEXT NOT NULL,
+  won_eur REAL NOT NULL, contracts INTEGER NOT NULL, first_date TEXT, last_date TEXT,
+  PRIMARY KEY (authority_id, bidder_id)
+);
 DELETE FROM flow_pairs;
 INSERT INTO flow_pairs (authority_id, bidder_id, authority_name, bidder_name, bidder_kind, won_eur, contracts, first_date, last_date)
 SELECT t.authority_id, c.bidder_id, a.name, b.name, b.kind, SUM(c.amount_eur), COUNT(*),
@@ -2490,6 +2503,9 @@ SELECT t.authority_id, c.bidder_id, a.name, b.name, b.kind, SUM(c.amount_eur), C
 FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
 WHERE c.amount_eur IS NOT NULL
 GROUP BY t.authority_id, c.bidder_id;
+CREATE INDEX IF NOT EXISTS idx_flow_pairs_won ON flow_pairs(won_eur DESC);
+CREATE INDEX IF NOT EXISTS idx_flow_pairs_authority ON flow_pairs(authority_id);
+CREATE INDEX IF NOT EXISTS idx_flow_pairs_bidder ON flow_pairs(bidder_id);
 
 -- @refresh-batch entity-search-index
 DELETE FROM search_index WHERE kind = 'company';

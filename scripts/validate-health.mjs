@@ -90,18 +90,29 @@ function main() {
     });
     if (leaked.length > 0)
       throw new Error(`${leaked.length} value_suspect rows have non-NULL score_overall`);
-    const authorityLeaks = suspects.filter((s) => {
+    // scored_contracts < total_contracts alone only proves SOME contract in the authority is
+    // unscored, which an authority sitting on just one or two contracts can trip for reasons
+    // unrelated to value_suspect. Require the gap to cover at least this authority's own
+    // value_suspect count, so the aggregate ties back to the specific rows checked above.
+    const suspectCountByAuthority = new Map();
+    for (const s of suspects) {
+      suspectCountByAuthority.set(
+        s.authority_id,
+        (suspectCountByAuthority.get(s.authority_id) ?? 0) + 1,
+      );
+    }
+    const authorityLeaks = [...suspectCountByAuthority.entries()].filter(([authorityId, count]) => {
       const at = one(
         `SELECT scored_contracts, total_contracts FROM authority_quality_totals WHERE authority_id = ?`,
-        s.authority_id,
+        authorityId,
       );
-      return !at || at.scored_contracts >= at.total_contracts;
+      return !at || at.total_contracts - at.scored_contracts < count;
     });
     if (authorityLeaks.length > 0)
       throw new Error(
-        `${authorityLeaks.length} value_suspect authorities have scored_contracts >= total_contracts`,
+        `${authorityLeaks.length} authorities have fewer unscored contracts than their value_suspect count`,
       );
-    return `${suspects.length} value_suspect rows, all score_overall NULL, all authorities scored<total`;
+    return `${suspects.length} value_suspect rows, all score_overall NULL, all authorities' unscored gap covers their suspect count`;
   });
 
   // 3) year_quality_totals has rows for 2020-2026
@@ -129,7 +140,8 @@ function main() {
   // ones (B in synthetic-heavy strata; A-bids in 2024 per §12.4) — print the matrix
   check('pillar NULL-rate by year (informational matrix, gated on undocumented strata)', () => {
     const rows = all(
-      `SELECT CASE WHEN c.signed_at IS NULL OR strftime('%Y', c.signed_at) NOT BETWEEN '2020' AND '2026'
+      `SELECT CASE WHEN c.signed_at IS NULL OR strftime('%Y', c.signed_at) IS NULL
+              OR strftime('%Y', c.signed_at) NOT BETWEEN '2020' AND '2026'
             THEN 'NA' ELSE strftime('%Y', c.signed_at) END AS yr,
        COUNT(*) AS n,
        ROUND(100.0 * SUM(CASE WHEN cf.score_a IS NULL THEN 1 ELSE 0 END) / COUNT(*), 1) AS a_null_pct,
@@ -146,8 +158,10 @@ function main() {
         `  ${r.yr.padEnd(6)} ${String(r.n).padEnd(7)} ${r.a_null_pct.toFixed(1).padStart(5)}  ${r.b_null_pct.toFixed(1).padStart(5)}  ${r.c_null_pct.toFixed(1).padStart(5)}  ${r.d_null_pct.toFixed(1).padStart(5)}  ${r.e_null_pct.toFixed(1).padStart(5)}`,
       );
     }
-    // undocumented exceptions: only pillar B may exceed 60% (synthetic-heavy strata, §4.B1/§12.2)
-    // and pillar A may exceed 60% in 2024 only (§12.4 — 2024 bids_received coverage hole).
+    // Pillar B is intentionally NEVER gated here (no b_null_pct check below) — synthetic-heavy
+    // strata (§4.B1/§12.2) can legitimately push it past 60% and a fixed threshold would false-fail
+    // on those, so B stays informational-only in the printed matrix above. Pillar A is gated in
+    // every year except 2024 (§12.4 — 2024 bids_received coverage hole).
     const bad = [];
     for (const r of rows) {
       if (r.yr === 'NA') continue;

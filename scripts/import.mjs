@@ -24,7 +24,7 @@ import {
   fullClearTables,
   refreshSliceStatementGroups,
 } from '../packages/ingest/src/refresh.ts';
-import { assertIntegrity, checkContractFeaturesIntegrity, CHECKS } from './integrity-checks.mjs';
+import { assertIntegrity, CHECKS } from './integrity-checks.mjs';
 import { buildAnomalyReport, formatAnomalyReport } from './anomaly-report.mjs';
 
 // Per-refresh anomaly report (#100): cross-row outliers the per-row value_flag can't see. OBSERVES
@@ -325,9 +325,11 @@ async function runFullDerive() {
   assertFxPopulated();
   execSql(resolve(root, 'scripts/precompute.sql'));
   runHealthDerive();
+  // checkContractFeaturesIntegrity already ships inside CHECKS (integrity-checks.mjs) — appending
+  // it again ran the same D1 reads twice per gate for no extra coverage.
   await assertIntegrity(d1, {
     label: 'full derive (D1)',
-    checks: [...CHECKS, checkContractFeaturesIntegrity],
+    checks: CHECKS,
   });
   reportAnomalies(d1, 'full derive (D1)');
 }
@@ -351,7 +353,7 @@ async function runSliceDerive() {
   runHealthDerive();
   await assertIntegrity(d1, {
     label: 'slice derive (D1)',
-    checks: [...CHECKS, checkContractFeaturesIntegrity],
+    checks: CHECKS,
   });
   reportAnomalies(d1, 'slice derive (D1)');
 }

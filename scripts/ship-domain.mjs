@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertIntegrity, checkContractFeaturesIntegrity } from './integrity-checks.mjs';
+import { assertIntegrity, checkContractFeaturesIntegrity, CHECKS } from './integrity-checks.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const apiDir = resolve(root, 'apps/web');
@@ -253,6 +253,11 @@ await assertIntegrity(d1Json, {
 // Reconciliation gate (#97) on the served D1: rollups now exist (just precomputed), so the rollup
 // checks run here — this is the database users read. Staging/pipeline_stats are not shipped, so the
 // staging-reconciliation check self-skips. Fails the ship with a non-zero exit on any drift.
+// checkContractFeaturesIntegrity already ran (and gated) above, right after its own derive — drop
+// it from this pass so it isn't read from D1 twice per ship.
 console.log('==> integrity gate on served D1');
-await assertIntegrity(d1Json, { label: `served D1 ${remote ? 'remote' : 'local'}` });
+await assertIntegrity(d1Json, {
+  label: `served D1 ${remote ? 'remote' : 'local'}`,
+  checks: CHECKS.filter((check) => check !== checkContractFeaturesIntegrity),
+});
 console.log('==> ship complete');
