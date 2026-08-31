@@ -2325,8 +2325,8 @@ a.pa-card-cpv:focus-visible {
 .clamp2 {
   display: -webkit-box;
   -webkit-line-clamp: 2;
-  line-clamp: 2;
   -webkit-box-orient: vertical;
+  line-clamp: 2;
   overflow: hidden;
 }
 

@@ -12,6 +12,11 @@ const migration0 = resolve(root, 'packages/db/migrations/0000_init.sql');
 const migration1 = resolve(root, 'packages/db/migrations/0001_flow_pairs_bidder_index.sql');
 const migration2 = resolve(root, 'packages/db/migrations/0002_current_value_currency.sql');
 const migration3 = resolve(root, 'packages/db/migrations/0003_related_persons_foundation.sql');
+const migration4 = resolve(root, 'packages/db/migrations/0004_cpv_division_stats.sql');
+const migration5 = resolve(root, 'packages/db/migrations/0005_list_sort_indexes.sql');
+const migration6 = resolve(root, 'packages/db/migrations/0006_amendment_restated.sql');
+const migration7 = resolve(root, 'packages/db/migrations/0007_amendment_value_suspect.sql');
+const migration8 = resolve(root, 'packages/db/migrations/0008_amendment_provenance.sql');
 const migration9 = resolve(root, 'packages/db/migrations/0009_interest_link_evidence.sql');
 const migration10 = resolve(root, 'packages/db/migrations/0010_publishing_gate_constraints.sql');
 const migration11 = resolve(root, 'packages/db/migrations/0011_contracts_overrun_index.sql');
@@ -64,6 +69,13 @@ describe('served migrations', () => {
       readScript(dbPath, migration1);
       readScript(dbPath, migration2);
       readScript(dbPath, migration3);
+      readScript(dbPath, migration4);
+      readScript(dbPath, migration5);
+      readScript(dbPath, migration6);
+      readScript(dbPath, migration7);
+      readScript(dbPath, migration8);
+      readScript(dbPath, migration9);
+      readScript(dbPath, migration10);
       readScript(dbPath, migration11);
 
       expect(
