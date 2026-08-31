@@ -11,9 +11,11 @@
 -- predicate itself straight from the index (both value columns are covered) — ~4x fewer ms/run in
 -- that benchmark. NOT fully covering for every OVERRUN_WHERE consumer: the by-authority/by-sector
 -- breakdowns and the leaderboard also JOIN on c.tender_id and select further contracts columns
--- (c.id, c.bidder_id, c.eu_funded, ...), so those still take one table lookup per matching row; only
--- the single-pass corpus aggregate (SUM/AVG over signing_value_eur/current_value_eur alone, no join)
--- is fully answered from the index.
+-- (c.id, c.bidder_id, c.eu_funded, ...), so those still take one table lookup per matching row. The
+-- conditional-aggregate scan in getOverrunsAnalytics (total_overrun_eur/count/avg_pct, all gated by
+-- OVERRUN_WHERE) is the one this index fully answers; `corpus_signing_eur` in that same query is a
+-- corpus-wide SUM with no WHERE (it's the shareOfSigning denominator, not an overrun-scoped figure),
+-- so it still full-scans contracts regardless of this index.
 CREATE INDEX IF NOT EXISTS idx_contracts_overrun ON contracts(signing_value_eur, current_value_eur)
   WHERE annex_count > 0;
 

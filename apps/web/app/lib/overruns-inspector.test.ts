@@ -27,6 +27,17 @@ describe('contractStatus', () => {
     expect(contractStatus('не е посочено', NOW)).toBeNull();
     expect(contractStatus('2024', NOW)).toBeNull(); // not a full YYYY-MM-DD
   });
+
+  it('omits the badge for syntactically valid but semantically impossible dates', () => {
+    // Date.UTC rolls these over silently (month 13 → next year, day 40 → next month) instead of
+    // returning NaN, so a round-trip check against the parsed components is required.
+    expect(contractStatus('2024-13-40', NOW)).toBeNull();
+    expect(contractStatus('2024-01-00', NOW)).toBeNull();
+  });
+
+  it('accepts a valid leap-day boundary date', () => {
+    expect(contractStatus('2024-02-29', NOW)).toBe('closed');
+  });
 });
 
 describe('groupAnnexes', () => {

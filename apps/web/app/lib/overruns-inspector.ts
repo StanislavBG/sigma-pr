@@ -22,8 +22,21 @@ export function contractStatus(
   if (!endDate) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(endDate);
   if (!m) return null;
-  const end = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const end = Date.UTC(year, month - 1, day);
   if (Number.isNaN(end)) return null;
+  // Date.UTC rolls semantically impossible components over silently (2024-13-40 → some 2025 date)
+  // instead of returning NaN — round-trip the parsed date back to its components to catch that.
+  const rolledOver = new Date(end);
+  if (
+    rolledOver.getUTCFullYear() !== year ||
+    rolledOver.getUTCMonth() !== month - 1 ||
+    rolledOver.getUTCDate() !== day
+  ) {
+    return null;
+  }
   const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return end < today ? 'closed' : 'active';
 }

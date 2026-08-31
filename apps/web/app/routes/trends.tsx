@@ -66,7 +66,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const cpvSel = cpvGroupSelection(sp).sort();
   // „вкл. текущия месец": the current (incomplete) period is excluded from the chart by default;
   // ?cur=1 opts back in (validated to exactly '1' so the edge-cache key space stays two-valued).
-  const cur = sp.get('cur') === '1';
+  // The toggle only renders on the time lens (below), so it only takes effect there — otherwise a
+  // user who enabled it there would see the current period silently bleed into the cpv/cross charts
+  // with no visible control explaining why.
+  const cur = angle === 'time' && sp.get('cur') === '1';
 
   // The cross lens always shows the compact quarterly picker; the time lens follows the step toggle.
   const granularity = angle === 'cross' ? 'quarter' : STEP_GRANULARITY[step];
@@ -399,6 +402,15 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
         />
 
         <TotalsStrip totals={totals} label="Обобщение на обзора" />
+
+        {/* getSpendingTrend has no year scope (only cpvGroups) — the chart/summary always cover the
+            whole period, while listOverviewContracts DOES narrow by year. Say so explicitly rather
+            than let the year card read as "active" while the numbers above it quietly disagree. */}
+        {year && (
+          <p className="muted ov-year-scope-note">
+            Обобщението и графиката обхващат целия период; списъкът долу е стеснен само до {year}.
+          </p>
+        )}
 
         <nav className="ov-controls" aria-label="Ъгъл на гледане и филтри">
           <span className="ov-controls-label">Ъгъл на гледане</span>
