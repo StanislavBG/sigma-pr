@@ -36,6 +36,7 @@ body_file="$2"
 
 if [ "$body_file" = "-" ]; then
   body_file="$(mktemp)"
+  trap 'rm -f "$body_file"' EXIT
   cat > "$body_file"
 elif [ ! -r "$body_file" ]; then
   echo "HALT: body file not readable: $body_file" >&2
