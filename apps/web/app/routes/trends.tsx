@@ -48,12 +48,30 @@ const STEP_GRANULARITY: Record<Step, TrendGranularity> = {
   y: 'year',
 };
 
+// Pre-rename values of the retired `g` param (#197 back-compat) → the current `step` codes.
+const LEGACY_GRANULARITY_STEP: Record<string, Step> = { month: 'm', quarter: 'q', year: 'y' };
+
+/**
+ * The /trends time-lens granularity toggle (`?step=`). Falls back to the retired
+ * `?g=month|quarter|year` param when `step` is absent, so bookmarks and shared links minted
+ * before the `g` → `step` rename keep their granularity instead of silently resetting to the
+ * default (`step` is canonical and always wins when both are present).
+ */
+export function trendStep(sp: URLSearchParams): Step {
+  const step = sp.get('step');
+  if (step == null) {
+    const legacy = LEGACY_GRANULARITY_STEP[sp.get('g') ?? ''];
+    if (legacy) return legacy;
+  }
+  return pick<Step>(step, ['m', 'q', 'y'], 'q');
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sp = new URL(request.url).searchParams;
   const db = getDb(context.cloudflare.env);
 
   const angle = pick<Angle>(sp.get('angle'), ['time', 'cpv', 'cross'], 'time');
-  const step = pick<Step>(sp.get('step'), ['m', 'q', 'y'], 'q');
+  const step = trendStep(sp);
   const sort = pick(sp.get('sort'), ['date', 'value'] as const, 'date');
   const cpvSort = pick(sp.get('cpvSort'), ['n', 'med', 'code'] as const, 'n');
   const yearRaw = sp.get('year');
@@ -187,9 +205,16 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
   const { angle, step, sort, cpvSort, year, cpv, trend, stats, contracts, medians } = loaderData;
   const [sp] = useSearchParams();
 
+  // Canonical base for every generated href: drop the retired `g` param (#197) and, when it was
+  // the only source of the granularity, carry the resolved `step` forward explicitly — so one click
+  // on any control migrates a legacy `?g=year` link onto `?step=y` instead of dragging `g` along.
+  const canonicalSp = new URLSearchParams(sp);
+  canonicalSp.delete('g');
+  if (!canonicalSp.has('step') && step !== 'q') canonicalSp.set('step', step);
+
   // Every control is a Link that patches the query string (null deletes a key).
   const hrefWith = (patch: Record<string, string | null>): string => {
-    const next = new URLSearchParams(sp);
+    const next = new URLSearchParams(canonicalSp);
     for (const [k, v] of Object.entries(patch)) {
       if (v == null) next.delete(k);
       else next.set(k, v);

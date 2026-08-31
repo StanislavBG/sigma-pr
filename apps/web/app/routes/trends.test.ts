@@ -11,7 +11,7 @@ vi.mock('@sigma/db', () => ({
   getCpvGroupMedians,
 }));
 
-const { logMax, relLabel, loader } = await import('./trends');
+const { logMax, relLabel, loader, trendStep } = await import('./trends');
 
 function makeGroup(maxEur: number): CpvGroupStat {
   return {
@@ -61,6 +61,18 @@ describe('relLabel', () => {
 
   it('flags values near the median', () => {
     expect(relLabel(1000, 1000)).toEqual({ text: '≈ типичното', cls: 'ov-rel-mid' });
+  });
+});
+
+describe('trendStep', () => {
+  const sp = (qs: string) => new URLSearchParams(qs);
+
+  it('falls back to the retired `g` param when `step` is absent (#197 back-compat)', () => {
+    expect(trendStep(sp('g=year'))).toBe('y');
+  });
+
+  it('prefers `step` over `g` when both are present', () => {
+    expect(trendStep(sp('g=year&step=m'))).toBe('m');
   });
 });
 
