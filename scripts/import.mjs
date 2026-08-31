@@ -389,7 +389,7 @@ async function runWorkBackfill() {
   // must match the table shape `wrangler d1 migrations apply` gives the served D1.
   const migrationsDir = resolve(root, 'packages/db/migrations');
   const migrationFiles = readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => /^\d.*\.sql$/.test(f))
     .sort();
   for (const migration of migrationFiles) {
     sqliteFile(workDb, resolve(migrationsDir, migration));

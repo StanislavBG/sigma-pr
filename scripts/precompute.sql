@@ -214,6 +214,9 @@ FROM (
 GROUP BY division;
 
 -- ── 5) flow_pairs (per authority → bidder) ──────────────────────────────────────────────────────
+-- flow_pairs is a precompute artifact (no migration manages it): DROP first so a served D1 that
+-- already has the table picks up first_date/last_date, not just a no-op CREATE IF NOT EXISTS.
+DROP TABLE IF EXISTS flow_pairs;
 CREATE TABLE IF NOT EXISTS flow_pairs (
   authority_id TEXT NOT NULL REFERENCES authorities(id), bidder_id TEXT NOT NULL REFERENCES bidders(id),
   authority_name TEXT NOT NULL, bidder_name TEXT NOT NULL, bidder_kind TEXT NOT NULL,

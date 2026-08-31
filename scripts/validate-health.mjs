@@ -117,6 +117,7 @@ function main() {
        WHERE substr(signed_at, 1, 4) BETWEEN '2020' AND '2099'
        GROUP BY y HAVING n >= 50)`,
     ).y;
+    if (maxYear == null) throw new Error('no corpus year with >=50 contracts');
     const expected = [];
     for (let y = 2020; y <= maxYear; y++) expected.push(String(y));
     const missing = missingYears(years, expected);
