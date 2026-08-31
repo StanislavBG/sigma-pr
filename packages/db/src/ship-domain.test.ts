@@ -130,8 +130,10 @@ Description line 2', 'test');
         error = err as Error & { status?: number; stdout?: Buffer; stderr?: Buffer };
       }
 
-      expect(error, 'ship-domain.mjs should exit non-zero on a violated contract-features invariant')
-        .toBeDefined();
+      expect(
+        error,
+        'ship-domain.mjs should exit non-zero on a violated contract-features invariant',
+      ).toBeDefined();
       expect(error?.status).toBe(1);
       const stdout = String(error?.stdout ?? '');
       const stderr = String(error?.stderr ?? '');
