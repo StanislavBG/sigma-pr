@@ -286,6 +286,8 @@ function contractScope(
     case 'supplier':
       return { where: 'AND c.bidder_id = ?', params: [sel] };
     case 'sector':
+      // Invariant confirmed against scripts/derive-contract-features.sql: sector_quality_totals.division
+      // is exactly `substr(t.cpv_code, 1, 2)`, matching the 2-digit prefix filtered here.
       return { where: 'AND substr(t.cpv_code, 1, 2) = ?', params: [sel] };
     case 'region':
       // Invariant confirmed against scripts/derive-contract-features.sql: region_quality_totals.nuts
@@ -385,8 +387,10 @@ async function qualityContracts(
     ? `AND f.score_overall >= ?${range.hi != null ? ' AND f.score_overall < ?' : ''}`
     : '';
   const bandParams = range ? (range.hi != null ? [range.lo, range.hi] : [range.lo]) : [];
-  // Scored contracts lead (weakest first); unscored value_suspect rows are still listed — after the
-  // scored ones — so exclusion is visible, not silent. Coverage-withheld rows stay off this list.
+  // Scored contracts lead (weakest first); with no band filter, unscored value_suspect rows are
+  // still listed — after the scored ones — so exclusion is visible, not silent. When a band filter
+  // IS active, bandWhere's `f.score_overall >= ?` excludes them too (NULL never satisfies it), so
+  // only scored rows within that band appear. Coverage-withheld rows stay off this list either way.
   const order =
     sort === 'value'
       ? 'ORDER BY c.amount_eur DESC, c.id'

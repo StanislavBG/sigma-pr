@@ -43,9 +43,13 @@ export async function loader({ context }: Route.LoaderArgs) {
     getSpendingTrend(db, { funding: 'all', granularity: 'year' }, { includeSectors: false }),
     getCompetitionSummary(db),
     getQualitySummary(db).catch((err) => {
-      // the quality tables land with the next full derive — anything else is unexpected
-      if (!isMissingDerivedTableError(err))
+      // the quality tables land with the next full derive; any other failure is a real
+      // breakage and must not be shown to the user as "still being computed"
+      if (!isMissingDerivedTableError(err)) {
         console.error('[analytics] getQualitySummary failed', err);
+        throw err;
+      }
+      console.warn('[analytics] quality tables not yet derived, showing empty state', err);
       return null;
     }),
   ]);
