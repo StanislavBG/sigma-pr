@@ -133,13 +133,23 @@ describe('estimateYoyGrowth', () => {
   });
 
   it('returns a flat factor with fewer than two complete years', () => {
-    expect(estimateYoyGrowth(year(2023, 100, 50, true))).toEqual({ value: 1, count: 1 });
+    expect(estimateYoyGrowth(year(2023, 100, 50, true))).toEqual({
+      value: 1,
+      count: 1,
+      insufficient: true,
+    });
   });
 
-  it('insufficient data yields a neutral multiplier that formats as 0%/год, never -100% or NaN', () => {
+  it('flags a complete-enough series as sufficient (insufficient: false)', () => {
+    const points = [...year(2021, 100, 50), ...year(2022, 120, 55), ...year(2023, 144, 60.5)];
+    expect(estimateYoyGrowth(points).insufficient).toBe(false);
+  });
+
+  it('insufficient data yields a neutral multiplier that formats as 0%/год, never -100% or NaN — but callers must check `insufficient` before formatting, since 0%/год is indistinguishable from a real flat year', () => {
     const g = estimateYoyGrowth(year(2023, 100, 50, true));
     expect(g.value).toBe(1); // neutral multiplier, not 0 (which would read as -100%/год below)
     expect(g.count).toBe(1);
+    expect(g.insufficient).toBe(true);
     expect(Number.isNaN(g.value)).toBe(false);
     expect(Number.isNaN(g.count)).toBe(false);
     expect(formatYearlyGrowth(g.value - 1)).toBe('0%/год');
@@ -189,6 +199,23 @@ describe('estimateYoyGrowth', () => {
       { period: '2023', valueEur: 120, contracts: 55, partial: false },
     ];
     expect(() => estimateYoyGrowth(yearly)).toThrow(/monthly/i);
+  });
+
+  it('skips a NULL or empty `period` instead of throwing — one dirty DB row must not take the route down', () => {
+    const points: TrendPoint[] = [
+      ...year(2021, 100, 50),
+      ...year(2022, 120, 55),
+      ...year(2023, 144, 60.5),
+      // dirty rows: NULL, empty string, and an unrecognized future format
+      { period: null as unknown as string, valueEur: 999, contracts: 999, partial: false },
+      { period: '', valueEur: 999, contracts: 999, partial: false },
+      { period: '2026-W12', valueEur: 999, contracts: 999, partial: false },
+    ];
+    expect(() => estimateYoyGrowth(points)).not.toThrow();
+    const g = estimateYoyGrowth(points);
+    // The dirty rows are dropped, not folded into any year, so the clean 2021→2023 ratio is unchanged.
+    expect(g.value).toBeCloseTo(1.2, 5);
+    expect(g.insufficient).toBe(false);
   });
 
   it('groups monthly points into full calendar years before computing ratios (/analytics granularity)', () => {

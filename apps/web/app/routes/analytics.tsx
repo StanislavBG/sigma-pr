@@ -54,14 +54,21 @@ export async function loader({ context }: Route.LoaderArgs) {
 
   const peak = peakPoint(trend.points);
   // Canonical YoY growth (3-year trailing median of complete-year ratios, clamped — ported from the
-  // retired /trends forecast) over the SAME trend points the loader already fetched. The
-  // multiplier (1.15) is reported as a ratio (0.15 → „+15%/год") via formatYearlyGrowth.
+  // retired /trends forecast, now fed this loader's MONTHLY series: estimateYoyGrowth groups the
+  // points back into full calendar years internally before computing ratios, so the monthly
+  // granularity here — kept only to find the peak month above — does not skew the yearly figure).
+  // The multiplier (1.15) is reported as a ratio (0.15 → „+15%/год") via formatYearlyGrowth.
+  // `insufficient` (fewer than two complete years on record) must render as an explicit no-data
+  // state (null → em-dash), never as `growth.value - 1 === 0`, which would read as a measured 0%.
   const growth = estimateYoyGrowth(trend.points);
   return {
     overruns,
     flows,
     region,
-    trend: { avgYoy: growth.value - 1, peakPeriod: peak?.period ?? null },
+    trend: {
+      avgYoy: growth.insufficient ? null : growth.value - 1,
+      peakPeriod: peak?.period ?? null,
+    },
     opaque: opaqueHeadline(opaque),
   };
 }
@@ -380,7 +387,10 @@ export default function Analytics({ loaderData }: Route.ComponentProps) {
                   label: 'СРЕДЕН РЪСТ',
                   accent: true,
                   summary: 'Типичният годишен ръст на разходите за последните 3 пълни години.',
-                  hint: 'Същата стойност като на страницата „Тренд".',
+                  hint:
+                    trend.avgYoy == null
+                      ? 'Няма достатъчно пълни години данни за оценка на ръста.'
+                      : 'Същата стойност като на страницата „Тренд".',
                 },
                 {
                   value: formatPeakMonth(trend.peakPeriod),

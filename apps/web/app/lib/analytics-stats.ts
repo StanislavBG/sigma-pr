@@ -127,6 +127,10 @@ export function formatPpChange(deltaRatio: number | null | undefined): string {
 export interface GrowthFactors {
   value: number; // YoY multiplier for spend (1.0 = flat)
   count: number; // YoY multiplier for contract count
+  // True when fewer than two complete years fed the estimate, so `value`/`count` are the neutral
+  // fallback (1), not a measured flat rate. Callers must render this as an explicit "no data" state
+  // (e.g. em-dash), never format the fallback into "+0%/год" — that would read as a measured zero.
+  insufficient: boolean;
 }
 
 // Guard against a single freak year producing an absurd growth figure. A real YoY ratio for national
@@ -162,24 +166,42 @@ const GROWTH_TRAILING_YEARS = 3;
  * window there are only two ratios, so the median coincides with their mean. Fewer than two complete
  * years → flat.
  */
+const QUARTER_OR_YEAR_PERIOD = /^\d{4}(-Q[1-4])?$/;
+
 export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   // Precondition: a monthly (`YYYY-MM`) series — completeness below is judged by "12 months seen
   // per year", which is only meaningful at month granularity. `TrendGranularity` also allows
   // 'quarter' ('YYYY-Qn') and 'year' ('YYYY'); feeding either here would silently fail the
   // months===12 check for every year and fall through to a flat {value:1,count:1} that reads as
   // "no growth" instead of "wrong input" — assert instead so a future non-month caller fails loud.
+  // A single malformed `period` is a different failure mode, though: `points` comes straight from
+  // the DB, so a NULL/empty/unexpected-format row must not take the whole route down with it — it is
+  // dropped (with a diagnostic) rather than thrown, while a systematic quarter/year series (a real
+  // caller bug) still throws.
+  const monthly: TrendPoint[] = [];
+  let skipped = 0;
   for (const p of points) {
-    if (!/^\d{4}-\d{2}$/.test(p.period)) {
+    if (typeof p.period === 'string' && /^\d{4}-\d{2}$/.test(p.period)) {
+      monthly.push(p);
+      continue;
+    }
+    if (typeof p.period === 'string' && QUARTER_OR_YEAR_PERIOD.test(p.period)) {
       throw new Error(
         `estimateYoyGrowth: expected a monthly (YYYY-MM) series, got period "${p.period}" — quarter/year granularity is not supported`,
       );
     }
+    skipped += 1;
+  }
+  if (skipped > 0) {
+    console.warn(
+      `estimateYoyGrowth: skipped ${skipped} point(s) with a malformed or missing period`,
+    );
   }
   const byYear = new Map<
     number,
     { value: number; count: number; months: number; partial: boolean }
   >();
-  for (const p of points) {
+  for (const p of monthly) {
     const y = Number(p.period.slice(0, 4));
     const acc = byYear.get(y) ?? { value: 0, count: 0, months: 0, partial: false };
     acc.value += p.valueEur;
@@ -191,7 +213,7 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   const complete = [...byYear.entries()]
     .filter(([, v]) => v.months === 12 && !v.partial && v.value > 0)
     .sort((a, b) => a[0] - b[0]);
-  if (complete.length < 2) return { value: 1, count: 1 };
+  if (complete.length < 2) return { value: 1, count: 1, insufficient: true };
   // Only the last N complete years (the trailing window) drive the rate.
   const recent = complete.slice(-GROWTH_TRAILING_YEARS);
 
@@ -206,5 +228,6 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   return {
     value: clampGrowth(valueRatios.length ? median(valueRatios) : 1),
     count: clampGrowth(countRatios.length ? median(countRatios) : 1),
+    insufficient: false,
   };
 }
