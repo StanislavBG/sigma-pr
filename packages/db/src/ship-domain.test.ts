@@ -45,7 +45,7 @@ describe('ship-domain', () => {
     const persistTo = resolve(dir, 'served');
     try {
       // Full migration chain, like scripts/import.mjs — ship-domain's precompute/derive steps
-      // reference the 0003 health-index columns.
+      // reference the 0012 health-index columns.
       const migrationsDir = resolve(root, 'packages/db/migrations');
       for (const f of readdirSync(migrationsDir)
         .filter((n) => n.endsWith('.sql'))
