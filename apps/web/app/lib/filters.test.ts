@@ -171,6 +171,14 @@ describe('trend param validation (angle/step/sort)', () => {
     expect(trendStep(sp('step=bogus'))).toBe('q');
   });
 
+  it('trendStep falls back to the retired `g` param when `step` is absent, but `step` wins when both are present (#197 back-compat)', () => {
+    expect(trendStep(sp('g=year'))).toBe('y');
+    expect(trendStep(sp('g=quarter'))).toBe('q');
+    expect(trendStep(sp('g=month'))).toBe('m');
+    expect(trendStep(sp('g=bogus'))).toBe('q');
+    expect(trendStep(sp('g=year&step=m'))).toBe('m');
+  });
+
   it('trendSort passes through known values and falls back to "date" otherwise', () => {
     expect(trendSort(sp('sort=value'))).toBe('value');
     expect(trendSort(sp('sort=date'))).toBe('date');

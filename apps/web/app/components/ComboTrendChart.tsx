@@ -44,15 +44,11 @@ export function ComboTrendChart({
   // real partial period, not "no partial period").
   const partialIdx = points.findIndex((p) => p.partial);
   const hasPartial = partialIdx !== -1;
-  if (import.meta.env.DEV && partialIdx === 0 && n > 1) {
-    console.warn(
-      `ComboTrendChart: partial period at index 0 of ${n} — the partial-is-always-last ` +
-        'invariant is broken upstream; the chart will render with no solid segment before it.',
-    );
-  } else if (import.meta.env.DEV && partialIdx > 0 && partialIdx !== n - 1) {
+  if (import.meta.env.DEV && hasPartial && partialIdx !== n - 1) {
     console.warn(
       `ComboTrendChart: partial period at index ${partialIdx} of ${n} is not last — the ` +
-        'partial-is-always-last invariant is broken upstream; the dashed tail will connect from the wrong point.',
+        'partial-is-always-last invariant is broken upstream; rendering the dashed tail at that ' +
+        'point and a second solid segment for the points after it, but check the series source.',
     );
   }
   const solidEnd = hasPartial ? partialIdx - 1 : n - 1;
@@ -70,6 +66,15 @@ export function ComboTrendChart({
     : solidEnd >= 0
       ? `M${xy(solidEnd)} L${xy(partialIdx)}`
       : `M${xy(partialIdx)} L${xy(partialIdx + 1)}`;
+  // If the partial period is not last (invariant violated upstream), the points after it are still
+  // real, complete data — draw them as their own solid segment instead of silently dropping them.
+  const tail =
+    hasPartial && partialIdx < n - 1
+      ? points
+          .slice(partialIdx)
+          .map((_p, i) => `${i ? 'L' : 'M'}${xy(partialIdx + i)}`)
+          .join(' ')
+      : '';
 
   const ticks = yearAxisTicks(points, granularity);
 
@@ -110,6 +115,7 @@ export function ComboTrendChart({
         {hasPartial && (
           <path className="combo-line-partial" d={dashed} vectorEffect="non-scaling-stroke" />
         )}
+        {tail && <path className="combo-line" d={tail} vectorEffect="non-scaling-stroke" />}
         {hp && hover != null && (
           <>
             <line

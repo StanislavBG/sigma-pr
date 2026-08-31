@@ -212,10 +212,17 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
   const [sp] = useSearchParams();
   const navigating = useNavigation().state !== 'idle';
 
+  // Canonical base for every generated href: drop the retired `g` param (#197) and, when it was
+  // the only source of the granularity, carry the resolved `step` forward explicitly — so one click
+  // on any control migrates a legacy `?g=year` link onto `?step=y` instead of dragging `g` along.
+  const canonicalSp = new URLSearchParams(sp);
+  canonicalSp.delete('g');
+  if (!canonicalSp.has('step') && step !== 'q') canonicalSp.set('step', step);
+
   // Every control is a Link that patches the query string (null deletes a key; an array replaces
   // every occurrence of a repeatable key — the CPV multi-select).
   const hrefWith = (patch: Record<string, string | string[] | null>): string => {
-    const next = new URLSearchParams(sp);
+    const next = new URLSearchParams(canonicalSp);
     for (const [k, v] of Object.entries(patch)) {
       next.delete(k);
       if (Array.isArray(v)) for (const item of v) next.append(k, item);

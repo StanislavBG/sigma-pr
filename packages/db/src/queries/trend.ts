@@ -14,7 +14,6 @@ import type {
   TrendPoint,
   TrendYear,
 } from '@sigma/api-contract';
-import { CPV_SECTORS } from '@sigma/config';
 import { cleanName, entityName } from '@sigma/shared';
 import { contractSlug } from './identity';
 import { sectorOptions } from './sectors';

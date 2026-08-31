@@ -78,9 +78,22 @@ export function trendAngle(sp: URLSearchParams): TrendAngle {
   return pickEnum(sp.get('angle'), TREND_ANGLES, 'time');
 }
 
-/** The /trends time-lens granularity toggle (`?step=`), validated the same way as {@link trendAngle}. */
+// Pre-rename values of the retired `g` param (#197 back-compat) → the current `step` codes.
+const LEGACY_GRANULARITY_STEP: Record<string, TrendStep> = { month: 'm', quarter: 'q', year: 'y' };
+
+/**
+ * The /trends time-lens granularity toggle (`?step=`), validated the same way as {@link trendAngle}.
+ * Falls back to the retired `?g=month|quarter|year` param when `step` is absent, so bookmarks and
+ * shared links minted before the `g` → `step` rename keep their granularity instead of silently
+ * resetting to the default (`step` is canonical and always wins when both are present).
+ */
 export function trendStep(sp: URLSearchParams): TrendStep {
-  return pickEnum(sp.get('step'), TREND_STEPS, 'q');
+  const step = sp.get('step');
+  if (step == null) {
+    const legacy = LEGACY_GRANULARITY_STEP[sp.get('g') ?? ''];
+    if (legacy) return legacy;
+  }
+  return pickEnum(step, TREND_STEPS, 'q');
 }
 
 /** The /trends contract-list sort (`?sort=`), validated the same way as {@link trendAngle}. */
