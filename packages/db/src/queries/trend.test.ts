@@ -461,6 +461,14 @@ describe('getCpvGroupMedians', () => {
   it('is a no-op for an empty group list', async () => {
     expect(await getCpvGroupMedians(overviewDb({}), [])).toEqual([]);
   });
+
+  it('caps concurrent D1 queries at MAX_CPV_GROUPS for an oversized group list', async () => {
+    const calls: QueryCall[] = [];
+    const db = overviewDb({ calls, first: () => null });
+    const oversized = Array.from({ length: 200 }, (_, i) => String(10000 + i));
+    await getCpvGroupMedians(db, oversized);
+    expect(calls).toHaveLength(40);
+  });
 });
 
 describe('listOverviewContracts', () => {

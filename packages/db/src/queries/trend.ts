@@ -383,14 +383,16 @@ export async function getCpvGroupStats(db: D1Database, limit = 10): Promise<CpvG
 
 /**
  * Median (plus count and a representative name) for arbitrary CPV groups — the „спрямо типичното"
- * cohort baseline for contract cards whose group is outside the top-N stats. Bounded by the caller:
- * one indexed pass per requested group, and the card page has at most a handful of distinct groups.
+ * cohort baseline for contract cards whose group is outside the top-N stats. Capped at
+ * MAX_CPV_GROUPS like validCpvGroups: getCpvGroupMedians fans out one concurrent D1 query per
+ * unique group via Promise.all, so an unvalidated caller could otherwise turn an oversized group
+ * list into unbounded concurrent D1 queries.
  */
 export async function getCpvGroupMedians(
   db: D1Database,
   groups: string[],
 ): Promise<CpvGroupMedian[]> {
-  const unique = [...new Set(groups)].filter((g) => /^\d{5}$/.test(g));
+  const unique = [...new Set(validCpvGroups(groups))];
   if (!unique.length) return [];
   const rows = await Promise.all(
     unique.map((g) =>
