@@ -15,7 +15,7 @@ import { TotalsStrip, type Total } from '../components/TotalsStrip';
 import { ComboTrendChart } from '../components/ComboTrendChart';
 import { Callout } from '../components/ui';
 import { publicCache } from '../lib/cache';
-import { cpvGroupSelection, singleSelectFilters } from '../lib/filters';
+import { cpvGroupSelection, yearCardState } from '../lib/filters';
 
 // „Договори — обзор": one list of contracts looked at from three angles (lenses) — in time, per CPV
 // group, or both at once. Every control is a plain <Link> mutating the query string, so the page is
@@ -327,11 +327,10 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
     { key: 'value', label: 'Стойност' },
   ] as const;
 
-  const yearCards = trend.years.map((y) => ({
-    ...y,
-    active: y.year === year,
-    href: hrefWith({ year: y.year === year ? null : y.year }),
-  }));
+  const yearCards = trend.years.map((y) => {
+    const { active, nextYear } = yearCardState(y.year, year);
+    return { ...y, active, href: hrefWith({ year: nextYear }) };
+  });
 
   const cpvPanel = (compact: boolean) => (
     <div className="ovz-panel ov-cpv" data-compact={compact || undefined}>

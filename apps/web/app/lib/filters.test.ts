@@ -13,6 +13,7 @@ import {
   PARAM_ORDER,
   searchHref,
   withParams,
+  yearCardState,
 } from './filters';
 import { CANONICAL_QUERY_PARAMS } from './query-params';
 
@@ -404,5 +405,17 @@ describe('withParams', () => {
     expect(PARAM_ORDER.includes('g')).toBe(true);
     expect(withParams(sp('sort=value-desc&g=1'), {})).toBe('?g=1&sort=value-desc');
     expect(withParams(sp('sort=value-desc'), { g: '1' })).toBe('?g=1&sort=value-desc');
+  });
+});
+
+describe('yearCardState', () => {
+  it('round-trips select → active → clear on the /trends year card toggle', () => {
+    // No year selected: every card is inactive and clicking one selects it.
+    expect(yearCardState('2023', null)).toEqual({ active: false, nextYear: '2023' });
+    // That year now selected (URL round-trip: nextYear from the click above becomes selectedYear):
+    // its card is active and clicking it again clears the filter.
+    expect(yearCardState('2023', '2023')).toEqual({ active: true, nextYear: null });
+    // A different year's card stays inactive and still selects itself on click.
+    expect(yearCardState('2022', '2023')).toEqual({ active: false, nextYear: '2022' });
   });
 });

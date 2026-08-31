@@ -142,6 +142,21 @@ export function singleSelectFilters(
   };
 }
 
+/**
+ * Pure predicate/href logic for the /trends year-card toggle. `selectedYear` comes from the URL
+ * (`?year=`, a string | null); `cardYear` comes from `TrendYear.year`, also a string — both sides of
+ * the `===` below are the SAME type by contract (see @sigma/api-contract's `TrendYear`), but this is
+ * pulled out and unit-tested so a future change to either side's type breaks a test, not silently
+ * breaks the toggle (a card that never highlights / never clears its filter).
+ */
+export function yearCardState(
+  cardYear: string,
+  selectedYear: string | null,
+): { active: boolean; nextYear: string | null } {
+  const active = cardYear === selectedYear;
+  return { active, nextYear: active ? null : cardYear };
+}
+
 interface SectorFacet {
   value: string;
   label: string;
