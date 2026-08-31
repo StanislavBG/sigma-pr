@@ -270,17 +270,49 @@ export const CPV_BUCKET_SERVICES: ReadonlySet<string> = new Set([
   '98',
 ]);
 
+// Explicit, not a fallback: every catalogued division not in CPV_BUCKET_WORKS/SERVICES is listed
+// here. A future division added to CPV_SECTORS (works, services, or goods) that is omitted from
+// all three sets now falls to `other` in cpvBucket below instead of being silently misclassified
+// as goods — the index.test.ts partition test catches the omission immediately.
+export const CPV_BUCKET_GOODS: ReadonlySet<string> = new Set([
+  '03',
+  '09',
+  '14',
+  '15',
+  '16',
+  '18',
+  '19',
+  '22',
+  '24',
+  '30',
+  '31',
+  '32',
+  '33',
+  '34',
+  '35',
+  '37',
+  '38',
+  '39',
+  '41',
+  '42',
+  '43',
+  '44',
+  '48',
+]);
+
 export const CPV_DIVISION_SET: ReadonlySet<string> = new Set(CPV_SECTORS.map((s) => s.code));
 
-/** Classify a CPV division/full code into its works/goods/services bucket. Unknown or missing codes
- *  fall to `other` (never silently coerced into a real bucket). Deterministic. */
+/** Classify a CPV division/full code into its works/goods/services bucket. Unknown or missing codes,
+ *  and any catalogued division absent from all three bucket sets, fall to `other` (never silently
+ *  coerced into a real bucket). Deterministic. */
 export function cpvBucket(division: string | null | undefined): CpvBucket {
   const code = cpvDivision(division);
   if (!code) return 'other';
   if (!CPV_DIVISION_SET.has(code)) return 'other';
   if (CPV_BUCKET_WORKS.has(code)) return 'works';
   if (CPV_BUCKET_SERVICES.has(code)) return 'services';
-  return 'goods';
+  if (CPV_BUCKET_GOODS.has(code)) return 'goods';
+  return 'other';
 }
 
 // ── Procedure groups (ЗОП procedure_type → display group) ──────────────────────────────────────

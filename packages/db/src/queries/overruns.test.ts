@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fakeD1 } from '@sigma/test-support';
 import {
   getOverrunAnnexes,
   getOverrunsAnalytics,
@@ -46,23 +47,7 @@ function fakeDb(
   rows: ReturnType<typeof rawRow>[] = [rawRow()],
   totals: { total_overrun_eur: number; count: number } = { total_overrun_eur: 500_000, count: 1 },
 ): { db: D1Database; sql: string[] } {
-  const sql: string[] = [];
-  const db = {
-    prepare(q: string) {
-      sql.push(q);
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          return { results: rows as T[] };
-        },
-        async first<T>() {
-          return totals as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+  const { db, sql } = fakeD1([{ when: [], all: rows, first: totals }]);
   return { db, sql };
 }
 
@@ -216,7 +201,6 @@ type AnalyticsFakes = {
 };
 
 function fakeAnalyticsDb(f: AnalyticsFakes = {}): { db: D1Database; sql: string[] } {
-  const sql: string[] = [];
   const corpus = f.corpus ?? {
     total_overrun_eur: 9_000_000,
     count: 3,
@@ -224,28 +208,16 @@ function fakeAnalyticsDb(f: AnalyticsFakes = {}): { db: D1Database; sql: string[
     corpus_signing_eur: 90_000_000,
   };
   const median = f.median ?? { median_pct: 0.42 };
-  const db = {
-    prepare(q: string) {
-      sql.push(q);
-      return {
-        bind() {
-          return this;
-        },
-        async all<T>() {
-          if (q.includes(MARKERS.leaderboard))
-            return { results: (f.leaderboard ?? [rawRow()]) as T[] };
-          if (q.includes(MARKERS.authority)) return { results: (f.authority ?? []) as T[] };
-          if (q.includes(MARKERS.sector)) return { results: (f.sector ?? []) as T[] };
-          return { results: [] as T[] };
-        },
-        async first<T>() {
-          if (q.includes(MARKERS.median)) return median as T;
-          if (q.includes(MARKERS.corpus)) return corpus as T;
-          return null as T;
-        },
-      };
-    },
-  } as unknown as D1Database;
+  const { db, sql } = fakeD1(
+    [
+      { when: MARKERS.leaderboard, all: f.leaderboard ?? [rawRow()] },
+      { when: MARKERS.authority, all: f.authority ?? [] },
+      { when: MARKERS.sector, all: f.sector ?? [] },
+      { when: MARKERS.median, first: median },
+      { when: MARKERS.corpus, first: corpus },
+    ],
+    { onUnmatched: 'empty' },
+  );
   return { db, sql };
 }
 
@@ -474,25 +446,17 @@ function fakeAnnexDb(rows: ReturnType<typeof annexRaw>[] = [annexRaw()]): {
   sql: string[];
   bound: unknown[][];
 } {
-  const sql: string[] = [];
   const bound: unknown[][] = [];
-  const db = {
-    prepare(q: string) {
-      sql.push(q);
-      return {
-        bind(...args: unknown[]) {
-          bound.push(args);
-          return this;
-        },
-        async all<T>() {
-          return { results: rows as T[] };
-        },
-        async first<T>() {
-          return null as T;
-        },
-      };
+  const { db, sql } = fakeD1([
+    {
+      when: [],
+      all: (call) => {
+        bound.push(call.binds);
+        return rows;
+      },
+      first: null,
     },
-  } as unknown as D1Database;
+  ]);
   return { db, sql, bound };
 }
 
@@ -599,15 +563,7 @@ describe('getOverrunAnnexes', () => {
 describe('getOverrunsHeadline', () => {
   // One statement, one row out: the two figures the /analytics card shows.
   function fakeDb(row: { total_overrun_eur: number; median_pct: number } | null): D1Database {
-    return {
-      prepare() {
-        return {
-          async first<T>() {
-            return row as T;
-          },
-        };
-      },
-    } as unknown as D1Database;
+    return fakeD1([{ when: [], first: row }]).db;
   }
 
   it('returns the corpus total overrun and median growth pct', async () => {

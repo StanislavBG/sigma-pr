@@ -49,6 +49,9 @@ const STEP_GRANULARITY: Record<Step, TrendGranularity> = {
   y: 'year',
 };
 
+// Shared by the query limit and the „показани първите N" label below so they can't drift apart.
+const OVERVIEW_LIMIT = 24;
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sp = new URL(request.url).searchParams;
   const db = getDb(context.cloudflare.env);
@@ -83,7 +86,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       { includeSectors: false },
     ),
     getCpvGroupStats(db, 10),
-    listOverviewContracts(db, { year, cpvGroups: cpvSel, sort, limit: 24 }),
+    listOverviewContracts(db, { year, cpvGroups: cpvSel, sort, limit: OVERVIEW_LIMIT }),
   ]);
 
   // „Спрямо типичното" baselines for card groups outside the top-N stats (bounded: distinct groups
@@ -574,7 +577,10 @@ export default function Trends({ loaderData }: Route.ComponentProps) {
               </h2>
               <p className="ov-panel-hint">
                 {count(contracts.length)} {plural(contracts.length, 'договор', 'договора')}
-                {contracts.length === 24 ? ' (показани първите 24)' : ''} · {scopeText}
+                {contracts.length === OVERVIEW_LIMIT
+                  ? ` (показани първите ${OVERVIEW_LIMIT})`
+                  : ''}{' '}
+                · {scopeText}
               </p>
             </div>
             <div className="ov-panel-tools">
