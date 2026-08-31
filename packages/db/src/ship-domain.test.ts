@@ -82,5 +82,14 @@ Description line 2', 'test');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 240_000);
+    // This exercises the real ship-domain.mjs pipeline end-to-end: a `wrangler d1
+    // migrations apply` plus ~55 further `wrangler d1 execute` round trips (per-table
+    // ship batches, before/after count checks, and the integrity gate's queries), each
+    // paying the wrangler CLI's own cold-start cost. That cost is environment-dependent
+    // (~5-6s per invocation on a slow-disk/overlay-fs devcontainer vs a fraction of a
+    // second on GitHub Actions' runners), so the previous 240_000ms budget had already
+    // gone negative on slower hardware even though the process itself terminates
+    // deterministically (no unawaited promise, no unclosed handle) in under 6 minutes.
+    // 600_000ms restores real headroom without masking an actual hang.
+  }, 600_000);
 });
