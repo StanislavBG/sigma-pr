@@ -203,29 +203,26 @@ describe('getSpendingTrend', () => {
 // ── Contracts overview queries ───────────────────────────────────────────────────────────────────
 
 // Fake D1 that routes each prepared statement by SQL shape and records { sql, args } for assertions.
+// `when: []` matches any query — the dispatch on SQL shape happens in the handlers themselves, same
+// as the hand-rolled double this replaced, just built through the shared fakeD1() helper (#325).
 function overviewDb(handlers: {
   all?: (sql: string, args: unknown[]) => unknown[];
   first?: (sql: string, args: unknown[]) => unknown;
   calls?: QueryCall[];
 }): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        args: [] as unknown[],
-        bind(...args: unknown[]) {
-          this.args = args;
-          handlers.calls?.push({ sql, args });
-          return this;
-        },
-        async all<T>() {
-          return { results: (handlers.all?.(sql, this.args) ?? []) as T[] };
-        },
-        async first<T>() {
-          return (handlers.first?.(sql, this.args) ?? null) as T;
-        },
-      };
+  return fakeD1([
+    {
+      when: [],
+      all: (call) => {
+        handlers.calls?.push({ sql: call.sql, args: call.binds });
+        return handlers.all?.(call.sql, call.binds) ?? [];
+      },
+      first: (call) => {
+        handlers.calls?.push({ sql: call.sql, args: call.binds });
+        return (handlers.first?.(call.sql, call.binds) ?? null) as object | null;
+      },
     },
-  } as unknown as D1Database;
+  ]).db;
 }
 
 describe('getCpvGroupStats', () => {

@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { d1FromSqlite } from '@sigma/test-support';
 import {
   coverageTier,
   getQuality,
@@ -202,28 +203,6 @@ function extractTableColumns(sql: string, table: string): string[] {
     .filter((name) => !constraintKeywords.has(name.toUpperCase()));
 }
 
-/** Minimal D1 surface over node:sqlite — enough for the module's prepare().bind().all()/first(). */
-function asD1(db: DatabaseSync): D1Database {
-  return {
-    prepare(sql: string) {
-      let args: (string | number | null)[] = [];
-      const stmt = {
-        bind(...a: (string | number | null)[]) {
-          args = a;
-          return stmt;
-        },
-        async all<T>() {
-          return { results: db.prepare(sql).all(...args) as T[] };
-        },
-        async first<T>() {
-          return (db.prepare(sql).get(...args) ?? null) as T | null;
-        },
-      };
-      return stmt;
-    },
-  } as unknown as D1Database;
-}
-
 let d1: D1Database;
 
 beforeAll(() => {
@@ -250,7 +229,7 @@ beforeAll(() => {
   }
   db.exec(QUALITY_DDL);
   db.exec(FIXTURE);
-  d1 = asD1(db);
+  d1 = d1FromSqlite(db);
 });
 
 // Schema-drift guard: QUALITY_DDL above is a third hand-copy of the quality schema (besides
