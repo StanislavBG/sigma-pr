@@ -127,6 +127,13 @@ describe('estimateYoyGrowth', () => {
     expect(g.count).toBeCloseTo(1.1, 5); // 50 → 55 → 60.5
   });
 
+  it('flags fewer than two complete years as insufficient, and a real estimate as sufficient', () => {
+    expect(estimateYoyGrowth(year(2022, 100, 50))).toMatchObject({ value: 1, insufficient: true });
+    expect(estimateYoyGrowth([...year(2022, 100, 50), ...year(2023, 120, 50)]).insufficient).toBe(
+      false,
+    );
+  });
+
   it('ignores the partial final year', () => {
     const points = [
       ...year(2021, 100, 50),
@@ -138,7 +145,7 @@ describe('estimateYoyGrowth', () => {
   });
 
   it('returns a flat factor with fewer than two complete years', () => {
-    expect(estimateYoyGrowth(year(2023, 100, 50, true))).toEqual({ value: 1, count: 1 });
+    expect(estimateYoyGrowth(year(2023, 100, 50, true))).toMatchObject({ value: 1, count: 1 });
   });
 
   it('never treats a ratio across a gap year as a one-year YoY factor', () => {
@@ -146,7 +153,7 @@ describe('estimateYoyGrowth', () => {
     // years (~+20%/yr compounded) — reading it as a single-year +44% would overstate growth, so
     // the non-adjacent pair must produce no ratio at all → flat.
     const points = [...year(2021, 100, 50), ...year(2023, 144, 72)];
-    expect(estimateYoyGrowth(points)).toEqual({ value: 1, count: 1 });
+    expect(estimateYoyGrowth(points)).toMatchObject({ value: 1, count: 1 });
   });
 
   it('clamps an absurd ratio into the sane band', () => {
@@ -192,7 +199,7 @@ describe('estimateYoyGrowth', () => {
   it('does not stretch a two-year jump across a missing year into one YoY step', () => {
     // 2021 → 2023 with 2022 absent would read as a single +44% "year"; the pair is skipped instead.
     const g = estimateYoyGrowth([...year(2021, 100, 50), ...year(2023, 144, 72)]);
-    expect(g).toEqual({ value: 1, count: 1 });
+    expect(g).toMatchObject({ value: 1, count: 1 });
   });
 
   it('still uses the consecutive pair when a gap precedes it', () => {

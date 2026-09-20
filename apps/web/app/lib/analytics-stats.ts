@@ -117,6 +117,10 @@ export function formatPpChange(deltaRatio: number | null | undefined): string {
 export interface GrowthFactors {
   value: number; // YoY multiplier for spend (1.0 = flat)
   count: number; // YoY multiplier for contract count
+  // True when fewer than two complete years fed the estimate, so `value`/`count` are the neutral
+  // fallback (1), not a measured flat rate. Callers must render this as an explicit "no data" state
+  // (e.g. em-dash), never format the fallback into "+0%/год" — that would read as a measured zero.
+  insufficient: boolean;
 }
 
 // Guard against a single freak year producing an absurd growth figure. A real YoY ratio for national
@@ -175,7 +179,7 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   const complete = [...byYear.entries()]
     .filter(([, v]) => v.months === 12 && !v.partial && v.value > 0)
     .sort((a, b) => a[0] - b[0]);
-  if (complete.length < 2) return { value: 1, count: 1 };
+  if (complete.length < 2) return { value: 1, count: 1, insufficient: true };
   // Only the last N complete years (the trailing window) drive the rate.
   const recent = complete.slice(-GROWTH_TRAILING_YEARS);
 
@@ -193,5 +197,6 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   return {
     value: clampGrowth(valueRatios.length ? median(valueRatios) : 1),
     count: clampGrowth(countRatios.length ? median(countRatios) : 1),
+    insufficient: false,
   };
 }

@@ -34,7 +34,10 @@ describe('loader (/analytics)', () => {
         { period: '2022-01', valueEur: 200 },
       ],
     });
-    q.getOpaqueShareByYear.mockResolvedValue([{ year: 2022, sharePct: 12.5 }]);
+    q.getOpaqueShareByYear.mockResolvedValue([
+      { year: '2021', valueEur: 1000, singleOfferValueEur: 100 },
+      { year: '2022', valueEur: 2000, singleOfferValueEur: 500 },
+    ]);
 
     const res = await loader({ context } as never);
 
@@ -53,7 +56,32 @@ describe('loader (/analytics)', () => {
     expect(res.region).toEqual({ regions: 28 });
     // Peak point is the max-value period among the fetched trend points, not fetched separately.
     expect(res.trend.peakPeriod).toBe('2022-06');
-    expect(typeof res.trend.avgYoy).toBe('number');
+    // Three months of data is < 2 complete years: an explicit no-data state, never a fake „+0%/год".
+    expect(res.trend.avgYoy).toBeNull();
+    // The opaque headline is really derived from the real OpaqueShareYear shape (10% → 25%).
+    expect(res.opaque).toMatchObject({ latestYear: '2022', firstYear: '2021' });
+    expect(res.opaque!.latestShare).toBeCloseTo(0.25, 5);
+    expect(res.opaque!.firstShare).toBeCloseTo(0.1, 5);
+    expect(res.opaque!.ppChange).toBeCloseTo(0.15, 5);
+  });
+
+  it('reports a numeric YoY once two complete monthly years are on record', async () => {
+    q.getOverrunsHeadline.mockResolvedValue({ totalOverrunEur: 0, count: 0 });
+    q.getFlowsHeadline.mockResolvedValue({ totalEur: 0 });
+    q.getRegionHeadline.mockResolvedValue({ regions: 0 });
+    const yr = (y: number, v: number) =>
+      Array.from({ length: 12 }, (_, i) => ({
+        period: `${y}-${String(i + 1).padStart(2, '0')}`,
+        valueEur: v,
+        contracts: 1,
+        partial: false,
+      }));
+    q.getSpendingTrend.mockResolvedValue({ points: [...yr(2022, 100), ...yr(2023, 120)] });
+    q.getOpaqueShareByYear.mockResolvedValue([]);
+
+    const res = await loader({ context } as never);
+
+    expect(res.trend.avgYoy).toBeCloseTo(0.2, 5);
   });
 
   it('never fabricates a peak period when there are no trend points', async () => {

@@ -33,6 +33,11 @@ export interface TrendParams {
   // the per-year fold — a half-filled month/quarter/year reading as a real dip is worse than a
   // shorter chart. Opt in (the /trends „вкл. текущия месец" toggle) to get it back, flagged `partial`.
   includeCurrent?: boolean;
+  // Narrow the returned `points` / `totalValueEur` to one signing year ('YYYY'). The per-year `years`
+  // summary deliberately stays whole-corpus (scoped only by the other filters), so the year cards a
+  // page renders keep every year reachable — selecting a year must not remove the other cards. The
+  // narrowing is a JS filter over the already-fetched series, so it adds no SQL and no cache variance.
+  year?: string | null;
 }
 
 // D1 statements accept at most 100 bound parameters (same limit overruns.ts chunks against), and
@@ -242,14 +247,18 @@ export async function getSpendingTrend(
     };
   });
 
+  // `years` above is folded from the whole series; only what the chart and totals strip show narrows.
+  const yearFilter = p.year && /^\d{4}$/.test(p.year) ? p.year : null;
+  const shown = yearFilter ? points.filter((pt) => pt.period.startsWith(yearFilter)) : points;
+
   const dated = coverageRow?.dated ?? 0;
   const total = coverageRow?.total ?? 0;
   return {
     granularity,
-    points,
+    points: shown,
     years,
     sectors,
-    totalValueEur: points.reduce((sum, pt) => sum + pt.valueEur, 0),
+    totalValueEur: shown.reduce((sum, pt) => sum + pt.valueEur, 0),
     coverage: { dated, total, pct: total > 0 ? dated / total : 0 },
     scope: { sector: p.sector ?? null, funding: p.funding ?? 'all', granularity },
   };

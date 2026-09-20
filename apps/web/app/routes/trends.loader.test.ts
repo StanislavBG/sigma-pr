@@ -39,7 +39,7 @@ describe('loader (trends.tsx / overview)', () => {
     expect(res.step).toBe('q');
     expect(q.getSpendingTrend).toHaveBeenCalledWith(
       DB,
-      { granularity: 'quarter', cpvGroups: [], includeCurrent: false },
+      { granularity: 'quarter', cpvGroups: [], includeCurrent: false, year: null },
       { includeSectors: false },
     );
     expect(q.listOverviewContracts).toHaveBeenCalledWith(DB, {
@@ -107,7 +107,7 @@ describe('loader (trends.tsx / overview)', () => {
     );
   });
 
-  it('forwards a well-formed ?year to the list query but leaves the trend corpus-wide', async () => {
+  it('forwards a well-formed ?year to BOTH the list and the trend, so chart and totals narrow with the list', async () => {
     q.getSpendingTrend.mockResolvedValue({ points: [] });
     q.getCpvGroupStats.mockResolvedValue({ groups: [] });
     q.listOverviewContracts.mockResolvedValue([]);
@@ -120,7 +120,7 @@ describe('loader (trends.tsx / overview)', () => {
       DB,
       expect.objectContaining({ year: '2024' }),
     );
-    expect(q.getSpendingTrend.mock.calls[0]![1]).not.toHaveProperty('year');
+    expect(q.getSpendingTrend.mock.calls[0]![1]).toHaveProperty('year', '2024');
   });
 
   it('also backfills a baseline for a selected CPV group that is outside the top-N stats', async () => {
