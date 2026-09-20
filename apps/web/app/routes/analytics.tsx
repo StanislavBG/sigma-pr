@@ -12,7 +12,7 @@ import { count, money, pct } from '@sigma/shared';
 import type { Route } from './+types/analytics';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { MetricInfo } from '../components/MetricInfo';
-import { publicCache } from '../lib/cache';
+import { cached } from '../lib/cache';
 import {
   estimateYoyGrowth,
   formatPeakMonth,
@@ -34,9 +34,7 @@ export function meta({ matches }: Route.MetaArgs) {
   });
 }
 
-export function headers() {
-  return { 'Cache-Control': publicCache(1800) };
-}
+export const headers = cached(1800);
 
 // Five lean, bounded rollup reads — one per landing card — in a single Promise.all (edge-cached
 // 1800s). Query budget: getOverrunsHeadline (1) + getFlowsHeadline (1) + getRegionHeadline (1) +

@@ -15,6 +15,7 @@ import {
   parseConsortiumMembers,
   signedMoney,
   signedPct,
+  tradeRegisterLegalForm,
 } from './format';
 
 const NBSP = ' '; // count()/money() use a non-breaking space so figures never wrap
@@ -110,8 +111,8 @@ describe('dates', () => {
 
 describe('entityName', () => {
   it('collapses a consortium member list to first + „и др."', () => {
-    expect(entityName('МЕДЕКС ООД; АЛТА ФАРМАСЮТИКЪЛС ООД; ЕКОФАРМ ЕООД', 'consortium')).toBe(
-      'МЕДЕКС ООД и др.',
+    expect(entityName('МЕДПРИМЕР ООД; АЛФА ФАРМА ООД; ЕКОПРИМЕР ЕООД', 'consortium')).toBe(
+      'МЕДПРИМЕР ООД и др.',
     );
   });
   it('passes company names through as source truth', () => {
@@ -178,10 +179,137 @@ describe('parseConsortiumMembers', () => {
 
 describe('isNaturalPersonProfileName', () => {
   it('detects sole-trader names that embed a natural person', () => {
-    expect(isNaturalPersonProfileName('ЕТ ДРИФТ - НИКОЛАЙ КИРОВ')).toBe(true);
+    expect(isNaturalPersonProfileName('ЕТ ДРИФТ - ИВАН ТЕСТОВ')).toBe(true);
+    expect(isNaturalPersonProfileName('ИВАН ПЕТРОВ', 'ET')).toBe(true);
+    expect(isNaturalPersonProfileName('ИВАН ПЕТРОВ', 'ФИЗИЧЕСКО ЛИЦЕ')).toBe(true);
+    expect(isNaturalPersonProfileName('ФИРМА', 'EOOD')).toBe(false);
   });
 
   it('does not flag ordinary company names', () => {
     expect(isNaturalPersonProfileName('СОФАРМА ТРЕЙДИНГ АД')).toBe(false);
+  });
+
+  it('accepts the latin ET spelling and requires the trailing space', () => {
+    expect(isNaturalPersonProfileName('ET DRIFT')).toBe(true);
+    expect(isNaturalPersonProfileName('  ет дрифт  ')).toBe(true); // trims + upcases first
+    expect(isNaturalPersonProfileName('ЕТАЖ ООД')).toBe(false); // "ЕТ" without the space is not a prefix
+  });
+});
+
+describe('tradeRegisterLegalForm', () => {
+  it('finds the commercial legal form a trader carries in its name', () => {
+    expect(tradeRegisterLegalForm('МЕТРОПОЛИТЕН ЕАД')).toBe('ЕАД');
+    expect(tradeRegisterLegalForm('"СОФИЙСКА ВОДА" АД')).toBe('АД');
+    expect(tradeRegisterLegalForm('В и К ООД')).toBe('ООД');
+    expect(tradeRegisterLegalForm('БОЛНИЦА - ВАРНА ЕООД, гр. Варна')).toBe('ЕООД');
+    expect(tradeRegisterLegalForm('ФОНД ИМОТИ АДСИЦ')).toBe('АДСИЦ');
+  });
+
+  it('finds nothing in a public body registered only in БУЛСТАТ', () => {
+    expect(tradeRegisterLegalForm('ОБЩИНА ВАРНА')).toBeNull();
+    expect(tradeRegisterLegalForm('МИНИСТЕРСТВО НА ЗДРАВЕОПАЗВАНЕТО')).toBeNull();
+    expect(tradeRegisterLegalForm('ОСНОВНО УЧИЛИЩЕ "ХРИСТО БОТЕВ"')).toBeNull();
+  });
+
+  it('does not read a form out of the middle of a word', () => {
+    expect(tradeRegisterLegalForm('АДМИНИСТРАЦИЯ НА ПРЕЗИДЕНТА')).toBeNull();
+    expect(tradeRegisterLegalForm('ПЛОВДИВ ЕАДЖ')).toBeNull();
+  });
+});
+
+describe('count (sign and absence branches)', () => {
+  it('signs negatives with U+2212 and groups thousands', () => {
+    expect(count(-1234)).toBe(`−1${NBSP}234`);
+    expect(count(-7)).toBe('−7');
+  });
+  it('rounds to the nearest integer before grouping', () => {
+    expect(count(0)).toBe('0');
+    expect(count(1234.6)).toBe(`1${NBSP}235`);
+    expect(count(1234.4)).toBe(`1${NBSP}234`);
+  });
+  it('returns a dash for absent or non-finite values', () => {
+    expect(count(null)).toBe('—');
+    expect(count(undefined)).toBe('—');
+    expect(count(NaN)).toBe('—');
+    expect(count(Infinity)).toBe('—');
+  });
+});
+
+describe('pct / signedPct (dp, absence, and precision branches)', () => {
+  it('returns a dash for absent or non-finite ratios', () => {
+    expect(pct(null)).toBe('—');
+    expect(pct(undefined)).toBe('—');
+    expect(pct(NaN)).toBe('—');
+    expect(signedPct(null)).toBe('—');
+    expect(signedPct(Infinity)).toBe('—');
+  });
+  it('honours an explicit decimal-places argument', () => {
+    expect(pct(0.12345, 2)).toBe('12,35%'); // rounds at 2 dp
+    expect(pct(0.789, 0)).toBe('79%'); // 0 dp
+    expect(signedPct(0.12345, 2)).toBe('+12,35%');
+    expect(signedPct(-0.12345, 2)).toBe('−12,35%');
+  });
+});
+
+describe('dates (fallback and tolerance branches)', () => {
+  it('tolerates a datetime suffix on date()/longDate()', () => {
+    expect(date('2024-10-14T09:30:00Z')).toBe('14.10.2024');
+    expect(longDate('2024-10-01T00:00:00')).toBe('1 октомври 2024 г.');
+  });
+  it('passes an unparseable string through verbatim', () => {
+    expect(date('не е дата')).toBe('не е дата');
+    expect(date('2024/10/14')).toBe('2024/10/14'); // needs dashes
+    expect(monthYear('няма')).toBe('няма');
+    expect(longDate('няма')).toBe('няма');
+  });
+  it('falls back to the raw month number when it is out of range', () => {
+    // MONTHS_BG[12] is undefined → the `?? m[2]` guard keeps the digits, never "undefined".
+    expect(monthYear('2024-13')).toBe('13 2024');
+    expect(longDate('2024-00-05')).toBe('5 00 2024 г.');
+  });
+  it('returns a dash for missing month/long dates', () => {
+    expect(monthYear(null)).toBe('—');
+    expect(monthYear(undefined)).toBe('—');
+    expect(longDate(null)).toBe('—');
+  });
+});
+
+describe('periodRange', () => {
+  it('joins two present endpoints', () => {
+    expect(periodRange('2020-07-03', '2026-05-20')).toBe('юли 2020 — май 2026');
+  });
+  it('collapses to the single present endpoint', () => {
+    expect(periodRange('2020-07-03', null)).toBe('юли 2020');
+    expect(periodRange(null, '2026-05-20')).toBe('май 2026');
+    expect(periodRange('2020-07-03', undefined)).toBe('юли 2020');
+  });
+  it('returns a dash when both endpoints are absent', () => {
+    expect(periodRange(null, null)).toBe('—');
+    expect(periodRange(undefined, undefined)).toBe('—');
+    expect(periodRange('', '')).toBe('—');
+  });
+});
+
+describe('entityName (non-collapsing branches)', () => {
+  it('passes a consortium name without a member separator through unchanged', () => {
+    expect(entityName('ЕДНО ОБЕДИНЕНИЕ ДЗЗД', 'consortium')).toBe('ЕДНО ОБЕДИНЕНИЕ ДЗЗД');
+  });
+  it('does not collapse a company name even when it contains a semicolon', () => {
+    expect(entityName('A; B', 'company')).toBe('A; B');
+  });
+  it('falls through when the first member segment is empty', () => {
+    expect(entityName('; ВТОРО ООД', 'consortium')).toBe('; ВТОРО ООД');
+  });
+});
+
+describe('cleanName (unbalanced-quote branch)', () => {
+  it('drops a single leading unbalanced quote', () => {
+    expect(cleanName('"ФИРМА ООД')).toBe('ФИРМА ООД');
+  });
+  it('drops a single trailing unbalanced quote', () => {
+    expect(cleanName('ФИРМА ООД"')).toBe('ФИРМА ООД');
+  });
+  it('leaves a balanced pair of quotes intact', () => {
+    expect(cleanName('"ЛУКОЙЛ"')).toBe('"ЛУКОЙЛ"');
   });
 });

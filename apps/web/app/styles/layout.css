@@ -167,41 +167,6 @@
   margin-left: var(--s-4);
 }
 
-/* Rail wrapper used on narrow viewports — becomes a single disclosure */
-.filters-toggle {
-  display: none;
-  margin: 0 0 var(--s-4);
-  border-top: 1px solid var(--ink);
-  border-bottom: 1px solid var(--ink);
-}
-.filters-toggle > summary {
-  list-style: none;
-  cursor: pointer;
-  padding: var(--s-3) 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--ink-mid);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.filters-toggle > summary::-webkit-details-marker {
-  display: none;
-}
-.filters-toggle > summary::after {
-  content: '+';
-  color: var(--ink-soft);
-  font-size: 16px;
-}
-.filters-toggle[open] > summary::after {
-  content: '\2013';
-}
-.filters-toggle .filters-body {
-  padding: 0 0 var(--s-4);
-}
-
 /* Filter-rail disclosure — CSS-only, no JS, identical SSR/client markup.
    Desktop: the rail is the sticky left column and always visible; the toggle is hidden.
    ≤960px (when .split stacks to one column): the rail collapses behind a tappable „Филтри"
@@ -282,6 +247,20 @@
   }
 }
 
+/* Chart beside its table inside one section (the profile "Тренд"). Tighter than .two-col, which is
+   a gap between sections; the chart takes the wider track so its year labels stay legible. */
+.trend-split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--s-5);
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .trend-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* The third-party accessibility launcher (.a11y-tools, loaded async from
    /assets/accessibility/) pins its 50px button at `top: 420px` inside a
    viewport-tall fixed container, so on phones it floats over the middle-right of
@@ -290,13 +269,21 @@
    anchors to the same container. `!important` beats the async widget stylesheet
    regardless of load order. */
 html .a11y-tools__button {
+  box-sizing: border-box;
   background-color: var(--accent);
   border-color: var(--accent);
 }
 @media (max-width: 760px) {
-  .a11y-tools__button {
+  .a11y-tools {
+    right: 0 !important;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  html .a11y-tools__button {
     top: auto !important;
     bottom: 0 !important;
+    left: -64px !important;
+    width: 48px;
+    height: 48px;
   }
 }
 
