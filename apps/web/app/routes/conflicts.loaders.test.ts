@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Loader-level tests for the свързани-лица routes. The rendered surface is covered by Playwright E2E;
 // these prove the loader GLUE in isolation (node env, no DOM) — the 404 guards that keep a bare page from
@@ -8,10 +8,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // @sigma/db is mocked so the loaders run without a real D1: the query functions are the trust boundary the
 // loaders sit on top of, and here we drive their return values to exercise every branch.
 const q = vi.hoisted(() => ({
-  getConflictLeaderboard: vi.fn(),
+  getRelatedPersonRows: vi.fn(),
+  getRegistryRolePersonRows: vi.fn(),
+  getRelatedPersonHeadline: vi.fn(),
+  getPersonTimeline: vi.fn(),
   getOfficialConflicts: vi.fn(),
-  getCompanyConflicts: vi.fn(),
+  getRegistryIdentity: vi.fn(),
+  getRegistryPerson: vi.fn(),
+  getRegistryOfficials: vi.fn(),
+  getPersonDestinations: vi.fn(),
+  getPersonScope: vi.fn(),
+  getPersonSourceArchive: vi.fn(),
+  getPersonDeclarations: vi.fn(),
+  getPersonActivity: vi.fn(),
   getLinkContracts: vi.fn(),
+  getAuthorityName: vi.fn(),
+  personSlug: vi.fn((id: string) => `slug-of-${id}`),
+  authorityIdFromSlug: vi.fn((slug: string) => `auth:${slug}`),
   personIdFromSlug: vi.fn(),
   // #199 chokepoint: loaders wrap env with getDb(env) → returns the read-only D1. In the test the env's
   // DB is the identity sentinel the query mocks assert on, so getDb just returns env.DB unchanged.
@@ -20,17 +33,45 @@ const q = vi.hoisted(() => ({
 vi.mock('@sigma/db', () => q);
 
 import { loader as leaderboardLoader } from './conflicts';
-import { loader as officialLoader } from './conflict.official';
-import { loader as companyLoader } from './conflict.company';
 import { loader as contractsLoader } from './conflict.contracts';
+
+import { emptyActivity } from '../lib/person-profile.test-support';
+beforeEach(() => {
+  q.getRegistryRolePersonRows.mockResolvedValue([]);
+  q.getRegistryIdentity.mockResolvedValue(null);
+  q.getPersonDestinations.mockResolvedValue([]);
+  q.getPersonScope.mockImplementation(async (_db, { officialId }: { officialId?: string }) => ({
+    indent: null,
+    officialIds: officialId ? [officialId] : [],
+  }));
+  q.getPersonSourceArchive.mockResolvedValue(null);
+  q.getPersonTimeline.mockResolvedValue({ contracts: [], observations: [], reads: [] });
+  q.getRelatedPersonHeadline.mockResolvedValue({
+    officialCount: 0,
+    linkCount: 0,
+    totalEur: 0,
+    contemporaneousEur: 0,
+  });
+  q.getPersonDeclarations.mockResolvedValue([]);
+  q.getPersonActivity.mockResolvedValue(emptyActivity);
+});
 
 const DB = {}; // the loaders only forward it to the (mocked) query fns; identity is all we assert on
 const context = { cloudflare: { env: { DB } } };
 const call = (loader: unknown, params: Record<string, string | undefined>) =>
-  (loader as (a: { params: typeof params; context: typeof context }) => Promise<unknown>)({
+  (
+    loader as (a: {
+      params: typeof params;
+      context: typeof context;
+      request: Request;
+    }) => Promise<unknown>
+  )({
     params,
     context,
+    request: new Request('http://localhost:5173/conflicts/test'),
   });
+
+const req = (qs = '') => new Request(`https://sigma.test/conflicts${qs}`);
 
 // A loader that throws a Response is the 404 contract. Assert both that it throws and the status.
 async function expectStatus(promise: Promise<unknown>, status: number) {
@@ -48,98 +89,98 @@ afterEach(() => {
   for (const fn of Object.values(q)) fn.mockReset();
 });
 
+describe('leaderboard loader — narrowed to one institution (?authority=)', () => {
+  it('fetches only that body’s links and names it for the page', async () => {
+    q.getAuthorityName.mockResolvedValue('ОБЩИНА ТЕСТ');
+    q.getRelatedPersonRows.mockResolvedValue([
+      { official: 'Иван Петров', officialSlug: 'p1', personIdentity: 'p1', declaredOffices: [] },
+    ]);
+    const res = (await leaderboardLoader({
+      request: req('?authority=000123456'),
+      context,
+    } as never)) as { data: { authority: unknown } };
+    expect(q.getAuthorityName).toHaveBeenCalledWith(DB, 'auth:000123456');
+    expect(q.getRelatedPersonRows).toHaveBeenCalledWith(DB, 'auth:000123456');
+    expect(res.data.authority).toEqual({ slug: '000123456', name: 'ОБЩИНА ТЕСТ' });
+  });
+
+  it('404s an ЕИК that names no institution, before reading any link', async () => {
+    q.getAuthorityName.mockResolvedValue(null);
+    await expectStatus(
+      leaderboardLoader({ request: req('?authority=000123456'), context } as never),
+      404,
+    );
+    expect(q.getRelatedPersonRows).not.toHaveBeenCalled();
+  });
+
+  // A few bodies carry a source id that is not an ЕИК at all — several ЕИК in one field, a URL, a person's
+  // name. Their profile pages are live and their „Свързани лица" button carries exactly that id, so a shape
+  // check would either 404 a real institution or, worse, drop the filter and publish the WHOLE list of links
+  // under that institution's name.
+  it('filters on a slug that is no ЕИК but names a real institution', async () => {
+    q.getAuthorityName.mockResolvedValue('Главна дирекция „Изпълнение на наказанията"');
+    q.getRelatedPersonRows.mockResolvedValue([]);
+    const res = (await leaderboardLoader({
+      request: req('?authority=BG129010029'),
+      context,
+    } as never)) as { data: { authority: unknown } };
+    expect(q.getRelatedPersonRows).toHaveBeenCalledWith(DB, 'auth:BG129010029');
+    expect(res.data.authority).toMatchObject({ slug: 'BG129010029' });
+  });
+
+  it('refuses a value that names no institution instead of serving the whole list', async () => {
+    q.getAuthorityName.mockResolvedValue(null);
+    await expectStatus(
+      leaderboardLoader({ request: req('?authority=abc'), context } as never),
+      404,
+    );
+    expect(q.getRelatedPersonRows).not.toHaveBeenCalled();
+  });
+});
+
 describe('leaderboard loader (/conflicts)', () => {
   it('caches for an hour when there are links (self or family, ADR-0032)', async () => {
-    q.getConflictLeaderboard.mockResolvedValue([{ linkKey: 'p|1' }]);
-    const res = (await leaderboardLoader({ context } as never)) as {
-      data: { links: unknown[] };
+    q.getRelatedPersonRows.mockResolvedValue([
+      { official: 'Иван Петров', officialSlug: 'p1', personIdentity: 'p1', declaredOffices: [] },
+    ]);
+    const res = (await leaderboardLoader({ request: req(), context } as never)) as {
+      data: { pageRows: unknown[] };
       init: { headers: Record<string, string> };
     };
-    expect(res.data.links).toHaveLength(1);
+    expect(res.data.pageRows).toHaveLength(1);
     expect(res.init.headers['Cache-Control']).toMatch(/s-maxage=3600/);
   });
 
   it('does NOT cache an empty read (avoids pinning a just-shipped empty surface for an hour)', async () => {
-    q.getConflictLeaderboard.mockResolvedValue([]);
-    const res = (await leaderboardLoader({ context } as never)) as {
+    q.getRelatedPersonRows.mockResolvedValue([]);
+    const res = (await leaderboardLoader({ request: req(), context } as never)) as {
       init: { headers: Record<string, string> };
     };
     expect(res.init.headers['Cache-Control']).toBe('no-store');
   });
 
-  it('slices to the ceiling and warns when the eligible set exceeds it (partial-aggregate guard)', async () => {
-    // The loader fetches ceiling+1 to DETECT truncation; on overflow it slices back to the ceiling and warns an
-    // operator, because per-person aggregates go partial past the cut (niki #312 MEDIUM 2). 1001 sentinels.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    q.getConflictLeaderboard.mockResolvedValue(
-      Array.from({ length: 1001 }, (_, i) => ({
-        linkKey: `p|${i}`,
+  it('paginates the complete filtered person set on the server without a ceiling', async () => {
+    q.getRelatedPersonRows.mockResolvedValue(
+      Array.from({ length: 1205 }, (_, i) => ({
+        official: `Лице ${i}`,
         officialSlug: `s${i}`,
-        eik: `${i}`,
+        personIdentity: `p${i}`,
+        contemporaneousValueEur: 1205 - i,
+        declaredOffices: [],
       })),
     );
-    const res = (await leaderboardLoader({ context } as never)) as { data: { links: unknown[] } };
-    expect(res.data.links).toHaveLength(1000); // sliced to the ceiling, never renders the +1 sentinel
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceed the 1000 ceiling'));
-    warn.mockRestore();
-  });
-});
-
-describe('official loader (/conflicts/official/:id)', () => {
-  it('404s an unresolvable slug before any DB read (no bare page under a name)', async () => {
-    q.personIdFromSlug.mockReturnValue(null);
-    await expectStatus(call(officialLoader, { id: 'not-a-real-slug' }), 404);
-    expect(q.getOfficialConflicts).not.toHaveBeenCalled();
-  });
-
-  it('404s when the person has no published links (null result)', async () => {
-    q.personIdFromSlug.mockReturnValue('person:1');
-    q.getOfficialConflicts.mockResolvedValue(null);
-    await expectStatus(call(officialLoader, { id: 'ivan-petrov-1' }), 404);
-  });
-
-  it('returns the conflict payload for a valid official', async () => {
-    q.personIdFromSlug.mockReturnValue('person:1');
-    // Match the real OfficialConflicts DTO shape — incl. the eager `contracts` map added in #287 (niki #312
-    // LOW 1: the untyped mock previously omitted it, the one gap the api-contract type exists to catch).
-    q.getOfficialConflicts.mockResolvedValue({ official: 'Иван Петров', links: [], contracts: {} });
-    const res = (await call(officialLoader, { id: 'ivan-petrov-1' })) as { official: string };
-    expect(res.official).toBe('Иван Петров');
-    expect(q.getOfficialConflicts).toHaveBeenCalledWith(DB, 'person:1');
-  });
-});
-
-describe('company loader (/conflicts/company/:eik)', () => {
-  it('404s a blank eik before any DB read', async () => {
-    await expectStatus(call(companyLoader, { eik: '   ' }), 404);
-    expect(q.getCompanyConflicts).not.toHaveBeenCalled();
-  });
-
-  it('404s when the company has no published links (null result)', async () => {
-    q.getCompanyConflicts.mockResolvedValue(null);
-    await expectStatus(call(companyLoader, { eik: '123456789' }), 404);
-  });
-
-  // A БГ ЕИК is 9 or 13 digits — always numeric. A non-numeric :eik can only be a probe/garbage; 404 it
-  // before any DB read, and before it reaches meta/URL. Guards uniformly with the sibling loaders.
-  it.each([
-    { eik: 'abc', why: 'non-numeric' },
-    { eik: '123|family', why: 'a decoded key-delimiter (%7C)' },
-    { eik: '12 34', why: 'embedded whitespace' },
-  ])('404s a $why eik before any DB read', async ({ eik }) => {
-    await expectStatus(call(companyLoader, { eik }), 404);
-    expect(q.getCompanyConflicts).not.toHaveBeenCalled();
-  });
-
-  it('returns the conflict payload for a valid company', async () => {
-    q.getCompanyConflicts.mockResolvedValue({
-      company: 'АЛФА ООД',
-      eik: '123456789',
-      links: [],
-      contracts: {},
-    });
-    const res = (await call(companyLoader, { eik: '123456789' })) as { company: string };
-    expect(res.company).toBe('АЛФА ООД');
+    const res = await leaderboardLoader({ request: req('?page=13'), context } as never);
+    expect(res.data.total).toBe(1205);
+    expect(res.data.pageRows).toHaveLength(5);
+    expect(res.data.pageRows[0]!.personIdentity).toBe('p1200');
+    expect(q.getRelatedPersonHeadline).not.toHaveBeenCalled();
+    const filtered = await leaderboardLoader({
+      request: req('?q=Лице%201204&page=13'),
+      context,
+    } as never);
+    expect(filtered.data.total).toBe(1);
+    expect(filtered.data.page).toBe(1);
+    expect(filtered.data.pageRows[0]!.personIdentity).toBe('p1204');
   });
 });
 
@@ -157,6 +198,14 @@ describe('contracts resource loader (/conflicts/link/:scope/:slug/:eik/contracts
   ])('404s on $why', async ({ params }) => {
     q.personIdFromSlug.mockReturnValue(params.slug ? 'person:1' : null);
     await expectStatus(call(contractsLoader, params), 404);
+    expect(q.getLinkContracts).not.toHaveBeenCalled();
+  });
+
+  it('404s when the route params are absent entirely (not merely blank)', async () => {
+    // React Router types :scope/:slug/:eik as optional; an absent key takes the `?? ''` fallback rather
+    // than reaching the DB with `undefined` interpolated into the link_key.
+    q.personIdFromSlug.mockReturnValue(null);
+    await expectStatus(call(contractsLoader, {}), 404);
     expect(q.getLinkContracts).not.toHaveBeenCalled();
   });
 

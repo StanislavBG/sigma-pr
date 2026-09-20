@@ -9,7 +9,7 @@ import { assertIntegrity } from '../../../scripts/integrity-checks.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 // Full migration chain (see scripts/import.mjs): refresh-slice.sql / normalize-raw.sql write the
-// health-index columns added by 0012, so schema-from-0000-only would miss them.
+// health-index columns added by 0024, so schema-from-0000-only would miss them.
 const migrationsDir = resolve(root, 'packages/db/migrations');
 const migrationPaths = readdirSync(migrationsDir)
   .filter((f) => f.endsWith('.sql'))
@@ -646,13 +646,13 @@ describe('refresh-slice EOP base derivation', () => {
     }
   });
 
-  it('recovers a served flow_pairs table created under the OLD (pre-0012) schema', () => {
+  it('recovers a served flow_pairs table created under the OLD (pre-0024) schema', () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'sigma-refresh-slice-flowpairs-'));
     const dbPath = resolve(dir, 'test.sqlite');
     try {
       for (const migration of migrationPaths) readScript(dbPath, migration);
       readScript(dbPath, workStagingSchemaPath);
-      // Simulate a served D1 whose flow_pairs predates migration 0012 — no first_date/last_date,
+      // Simulate a served D1 whose flow_pairs predates migration 0024 — no first_date/last_date,
       // and none of the three indexes the current migration chain gives a fresh DB.
       sqlite(
         dbPath,

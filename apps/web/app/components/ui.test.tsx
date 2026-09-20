@@ -1,0 +1,256 @@
+// @vitest-environment jsdom
+// ui.tsx holds the shared editorial primitives. Every one takes an optional prop that switches a class
+// or drops a subtree; those are exactly the branches the page-level render tests never reach (they only
+// ever exercise whichever variant that page happens to use). Render each primitive both ways.
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  Callout,
+  Chip,
+  Explanation,
+  ExternalEikLink,
+  Flag,
+  OwnershipChip,
+  RegistryCta,
+  Section,
+  ShareBar,
+  registryUrl,
+} from './ui';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+});
+
+function render(node: React.ReactNode) {
+  act(() => {
+    root.render(node);
+  });
+  return container;
+}
+
+describe('Chip', () => {
+  it('explains labels containing acronyms regardless of their displayed case', () => {
+    for (const label of ['без ЕИК', 'Лична роля в ТР']) {
+      const el = render(<Chip>{label}</Chip>);
+      const button = el.querySelector('button')!;
+      expect(button.textContent).toBe(label);
+      expect(button.classList.contains('chip')).toBe(true);
+      expect(el.querySelector('.help-trigger')).toBeNull();
+      expect(button.getAttribute('aria-label')).toContain(label);
+      const target = document.getElementById(button.getAttribute('popovertarget')!);
+      expect(target?.getAttribute('popover')).toBe('auto');
+      expect(target?.textContent?.length).toBeGreaterThan(20);
+    }
+  });
+
+  it('keeps question buttons in standalone explanations and static chips inside links', () => {
+    expect(render(<Explanation text="Легенда" />).querySelector('.help-trigger')?.textContent).toBe(
+      '?',
+    );
+    const el = render(
+      <a href="/company">
+        <Chip explain={false}>без ЕИК</Chip>
+      </a>,
+    );
+    expect(el.querySelector('button')).toBeNull();
+    expect(el.querySelector('.chip')?.textContent).toBe('без ЕИК');
+  });
+
+  it('emits a bare chip class with no tone and a toned modifier with one', () => {
+    expect(render(<Chip>плайн</Chip>).querySelector('span')!.className).toBe('chip');
+    expect(render(<Chip tone="strong">силен</Chip>).querySelector('span')!.className).toBe(
+      'chip chip-strong',
+    );
+    expect(render(<Chip tone="window">прозорец</Chip>).querySelector('span')!.className).toBe(
+      'chip chip-window',
+    );
+  });
+});
+
+describe('ExternalEikLink', () => {
+  it('URL-encodes the ЕИК, opens in a new tab safely, and appends an optional class', () => {
+    const a = render(<ExternalEikLink eik="123 456" />).querySelector('a')!;
+    expect(a.getAttribute('href')).toContain('uic=123%20456'); // encoded, not raw
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer'); // no reverse-tabnabbing
+    expect(a.className).toBe('external-eik-link');
+    expect(a.getAttribute('aria-label')).toContain('123 456');
+
+    const withClass = render(<ExternalEikLink eik="111" className="inline" />).querySelector('a')!;
+    expect(withClass.className).toBe('external-eik-link inline');
+  });
+});
+
+describe('RegistryCta', () => {
+  it("opens the ЕИК's register report in a new tab, as a labelled header action", () => {
+    const a = render(<RegistryCta eik="831646048" />).querySelector('a')!;
+    expect(a.getAttribute('href')).toBe(registryUrl('831646048'));
+    expect(a.getAttribute('href')).toContain('uic=831646048');
+    expect(a.className).toBe('source-cta'); // the header-action style, :visited guard included
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(a.textContent).toContain('Виж в Търговския регистър');
+    expect(a.textContent).toContain('в нов раздел'); // said, not just drawn as ↗
+  });
+});
+
+describe('OwnershipChip', () => {
+  it('renders nothing when the ownership kind is absent', () => {
+    expect(render(<OwnershipChip kind={null} />).querySelector('span')).toBeNull();
+    expect(render(<OwnershipChip kind={undefined} />).querySelector('span')).toBeNull();
+  });
+
+  it('labels each ownership kind in Bulgarian', () => {
+    expect(render(<OwnershipChip kind="state" />).textContent).toBe('държавно');
+    expect(render(<OwnershipChip kind="municipal" />).textContent).toBe('общинско');
+    expect(render(<OwnershipChip kind="mixed" />).textContent).toBe('държавно-общинско');
+  });
+});
+
+describe('Flag', () => {
+  it('emits a bare flag with no variant and a suffixed class with one', () => {
+    expect(render(<Flag>гол</Flag>).querySelector('span')!.className).toBe('flag');
+    for (const variant of ['soft', 'info', 'neutral'] as const) {
+      expect(render(<Flag variant={variant}>x</Flag>).querySelector('span')!.className).toBe(
+        `flag ${variant}`,
+      );
+    }
+  });
+});
+
+describe('ShareBar', () => {
+  it('clamps the fill width to 0–100% for out-of-range ratios', () => {
+    // jsdom re-serialises the CSS length, so compare the numeric percentage, not the raw string.
+    const fill = (ratio: number) =>
+      parseFloat(
+        (render(<ShareBar ratio={ratio} />).querySelector('.share-bar i') as HTMLElement).style
+          .width,
+      );
+    expect(fill(-0.5)).toBe(0); // negative clamps to the floor
+    expect(fill(2)).toBe(100); // over-unity clamps to the ceiling
+    expect(fill(0.253)).toBe(25.3); // in range, one decimal
+  });
+
+  it('paints the warn variant and adds a screen-reader-only note only when warn is set', () => {
+    const plain = render(<ShareBar ratio={0.4} />);
+    expect(plain.querySelector('.share-bar')!.className).toBe('share-bar');
+    expect(plain.querySelector('.sr-only')).toBeNull();
+
+    const warned = render(<ShareBar ratio={0.9} warn />);
+    expect(warned.querySelector('.share-bar')!.className).toBe('share-bar warn');
+    expect(warned.querySelector('.sr-only')!.textContent).toContain('висок дял');
+  });
+});
+
+describe('Callout', () => {
+  it('omits the heading entirely when no title is given', () => {
+    const el = render(<Callout>тяло</Callout>);
+    expect(el.querySelector('h2, h3')).toBeNull();
+    expect(el.querySelector('div')!.className).toBe('callout');
+  });
+
+  it('defaults the title to h3 and honours an explicit h2 (heading order)', () => {
+    expect(render(<Callout title="Заглавие">тяло</Callout>).querySelector('h3')).not.toBeNull();
+    expect(
+      render(
+        <Callout title="Заглавие" titleAs="h2">
+          тяло
+        </Callout>,
+      ).querySelector('h2'),
+    ).not.toBeNull();
+  });
+
+  it('suffixes the variant class when set', () => {
+    expect(
+      render(
+        <Callout title="Внимание" variant="warning">
+          тяло
+        </Callout>,
+      ).querySelector('div')!.className,
+    ).toBe('callout warning');
+  });
+});
+
+describe('Section', () => {
+  it('wires the heading id to aria-labelledby and drops the hint when absent', () => {
+    const el = render(
+      <Section id="sec-1" title="Дял">
+        тяло
+      </Section>,
+    );
+    expect(el.querySelector('section')!.getAttribute('aria-labelledby')).toBe('sec-1');
+    expect(el.querySelector('h2')!.id).toBe('sec-1');
+    expect(el.querySelector('.section-hint')).toBeNull();
+  });
+
+  it('renders the hint paragraph when provided', () => {
+    const el = render(
+      <Section id="sec-2" title="Дял" hint="пояснение">
+        тяло
+      </Section>,
+    );
+    expect(el.querySelector('.section-hint')!.textContent).toBe('пояснение');
+  });
+});
+
+describe('Chip — only a plain label is explained', () => {
+  it('draws a static chip for composed content, even when its words have an explanation', () => {
+    const el = render(
+      <Chip>
+        <strong>без ЕИК</strong>
+      </Chip>,
+    );
+    expect(el.querySelector('button')).toBeNull();
+    expect(el.querySelector('span.chip strong')!.textContent).toBe('без ЕИК');
+  });
+});
+
+describe('Explanation — the popover stays on screen', () => {
+  // jsdom lays nothing out, so each test places the trigger or the panel itself; its viewport is 1024 × 768.
+  const at = (box: Partial<DOMRect>) => () => ({ ...new DOMRect(), ...box, toJSON: () => box });
+
+  it('opens by its trigger, but never past the right or bottom edge nor into the margin', () => {
+    const el = render(<Explanation text="Пояснение" />);
+    const button = el.querySelector('button')!;
+    const panel = document.getElementById(button.getAttribute('popovertarget')!)!;
+    const open = (box: Partial<DOMRect>) => {
+      button.getBoundingClientRect = at(box);
+      act(() => button.click());
+      return [panel.style.left, panel.style.top];
+    };
+    expect(open({ left: 100, bottom: 200 })).toEqual(['100px', '208px']);
+    expect(open({ left: 900, bottom: 700 })).toEqual([
+      `${window.innerWidth - 332}px`,
+      `${window.innerHeight - 180}px`,
+    ]);
+    expect(open({ left: -40, bottom: -30 })).toEqual(['12px', '12px']);
+  });
+
+  it('lifts an opened popover above the bottom edge, and leaves a closing one alone', () => {
+    const el = render(<Explanation text="Пояснение" />);
+    const panel = el.querySelector<HTMLElement>('.help-popover')!;
+    panel.getBoundingClientRect = at({ top: 700, height: 100 });
+    const toggle = (newState: string) =>
+      act(() => {
+        panel.dispatchEvent(Object.assign(new Event('toggle'), { newState }));
+      });
+    toggle('closed');
+    expect(panel.style.top).toBe('');
+    toggle('open');
+    expect(panel.style.top).toBe(`${window.innerHeight - 100 - 12}px`);
+  });
+});

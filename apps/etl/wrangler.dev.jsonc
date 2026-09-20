@@ -1,0 +1,58 @@
+// Local `wrangler dev` only. The real dev ids live in the private deploy config, never here: this file
+// is tracked in a PUBLIC repository, so it carries the same zero-UUID placeholder as wrangler.toml.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sigma-etl-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "limits": { "subrequests": 100000 },
+  "workers_dev": false,
+  "preview_urls": false,
+  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
+  "vars": {
+    "REGISTRY_API_BASE_URL": "https://api-sigma-cr.registryagency.bg",
+    "REGISTRY_PORTAL_URL": "https://portal.registryagency.bg/CR/api/Applications/Entries",
+    "SIGMA_D1_ID": "00000000-0000-0000-0000-000000000000",
+    "SIGMA_D1_NAME": "sigma-dev",
+    "SIGMA_SHIP_ENV": "dev",
+    "DECLARATIONS_BUCKET": "sigma-declarations-dev",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sigma-dev",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
+  ],
+  "workflows": [
+    { "binding": "REGISTRY", "name": "sigma-registry-dev", "class_name": "RegistryWorkflow" },
+    {
+      "binding": "DECLARATIONS_RUN",
+      "name": "sigma-declarations-dev",
+      "class_name": "DeclarationsWorkflow",
+    },
+    { "binding": "REBUILD_RUN", "name": "sigma-rebuild-dev", "class_name": "RebuildWorkflow" },
+  ],
+  "containers": [
+    {
+      "class_name": "DeclarationContainer",
+      "image": "../../containers/declarations/Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": "standard-3",
+      "max_instances": 1,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "DECLARATIONS", "class_name": "DeclarationContainer" }],
+  },
+  "migrations": [{ "tag": "v1-declarations", "new_sqlite_classes": ["DeclarationContainer"] }],
+  "r2_buckets": [{ "binding": "DECLARATIONS_CORPUS", "bucket_name": "sigma-declarations-dev" }],
+  "triggers": { "crons": [] },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "persist": true, "invocation_logs": true },
+    "traces": { "enabled": true, "persist": true },
+  },
+}

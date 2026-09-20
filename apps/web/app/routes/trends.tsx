@@ -14,7 +14,7 @@ import { PageHeader } from '../components/PageHeader';
 import { TotalsStrip, type Total } from '../components/TotalsStrip';
 import { ComboTrendChart } from '../components/ComboTrendChart';
 import { Callout } from '../components/ui';
-import { publicCache } from '../lib/cache';
+import { cached } from '../lib/cache';
 
 // „Договори — обзор": one list of contracts looked at from three angles (lenses) — in time, per CPV
 // group, or both at once. Every control is a plain <Link> mutating the query string, so the page is
@@ -31,9 +31,7 @@ export function meta(_: Route.MetaArgs) {
   ];
 }
 
-export function headers() {
-  return { 'Cache-Control': publicCache(1800) };
-}
+export const headers = cached(1800);
 
 type Angle = 'time' | 'cpv' | 'cross';
 type Step = 'm' | 'q' | 'y';

@@ -161,6 +161,20 @@ describe('loadFxRates', () => {
     expect(summary).toEqual({ fetched: [], skipped: [], inserted: 0, uncovered: [], warnings: [] });
   });
 
+  it('skips a coverage gap whose staged contract_date is not a valid ISO date', async () => {
+    // A malformed date in raw staging surfaces verbatim through findFxCoverageGaps' MIN/MAX (the SQL
+    // does not format-validate), so loadFxRates must reject the range before fetching.
+    const { db, d1 } = fxDb();
+    stageContract(db, 'CHF', '2026-7-8'); // unpadded → isIsoDate false
+    const fetchFn = vi.fn();
+
+    const summary = await loadFxRates(d1, { fetchedAt: FETCHED_AT, fetchFn });
+
+    expect(fetchFn).not.toHaveBeenCalled(); // never fetches for an unusable range
+    expect(summary.skipped).toContain('CHF');
+    expect(summary.warnings.some((w) => w.includes('invalid date range'))).toBe(true);
+  });
+
   it('fetches only the gap range and upserts rates idempotently', async () => {
     const { db, d1 } = fxDb();
     stageContract(db, 'USD', '2026-07-08');
@@ -383,5 +397,30 @@ describe('loadFxRates', () => {
     expect(count.n).toBe(Object.keys(rates).length);
     expect(summary.inserted).toBe(Object.keys(rates).length);
     expect(summary.uncovered).toEqual([]);
+  });
+});
+
+describe('loadFxRates — default fetch and non-Error failures', () => {
+  it('uses the global fetch when none is injected', async () => {
+    const { db, d1 } = fxDb();
+    stageContract(db, 'USD', '2026-07-08');
+    const fetchFn = vi.fn(async () => seriesResponse({ '2026-07-07': { EUR: 0.87 } }));
+    vi.stubGlobal('fetch', fetchFn);
+    try {
+      const summary = await loadFxRates(d1, { fetchedAt: FETCHED_AT });
+      expect(fetchFn).toHaveBeenCalledWith(fxSeriesUrl('USD', '2026-06-28', '2026-07-08'));
+      expect(summary).toMatchObject({ inserted: 1, uncovered: [] });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a failure thrown as a bare value by its text', async () => {
+    const { db, d1 } = fxDb();
+    stageContract(db, 'USD', '2026-07-08');
+    const fetchFn = vi.fn().mockRejectedValue('connection reset') as unknown as typeof fetch;
+    await expect(loadFxRates(d1, { fetchedAt: FETCHED_AT, fetchFn })).rejects.toThrow(
+      /USD 2026-07-08\.\.2026-07-08 \(1 dates\): connection reset/,
+    );
   });
 });

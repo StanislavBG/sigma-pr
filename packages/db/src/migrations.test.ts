@@ -27,7 +27,19 @@ const EXPECTED_MIGRATION_FILES = [
   '0008_amendment_provenance.sql',
   '0009_interest_link_evidence.sql',
   '0010_publishing_gate_constraints.sql',
-  '0012_contract_health.sql',
+  '0011_company_links.sql',
+  '0012_person_redirects.sql',
+  '0013_registry.sql',
+  '0014_person_profile.sql',
+  '0015_person_observations.sql',
+  '0016_registry_entry_sync.sql',
+  '0017_registry_identity_observations.sql',
+  '0018_person_entities.sql',
+  '0019_registry_scoped_birthdates.sql',
+  '0020_registry_company_history.sql',
+  '0021_registry_entry_baseline.sql',
+  '0022_person_relatives.sql',
+  '0024_contract_health.sql',
 ];
 const migrationFiles = readdirSync(migrationsDir)
   .filter((f) => f.endsWith('.sql'))
@@ -38,8 +50,15 @@ const migration1 = resolve(root, 'packages/db/migrations/0001_flow_pairs_bidder_
 const migration2 = resolve(root, 'packages/db/migrations/0002_current_value_currency.sql');
 const migration3 = resolve(root, 'packages/db/migrations/0003_related_persons_foundation.sql');
 const migration9 = resolve(root, 'packages/db/migrations/0009_interest_link_evidence.sql');
+// The officials search rows read person_registry_links (0014), interest_link_observations (0015) and
+// person_sources (0018).
+const personMigrationPaths = [
+  'packages/db/migrations/0014_person_profile.sql',
+  'packages/db/migrations/0015_person_observations.sql',
+  'packages/db/migrations/0018_person_entities.sql',
+].map((p) => resolve(root, p));
 const migration10 = resolve(root, 'packages/db/migrations/0010_publishing_gate_constraints.sql');
-const migration12 = resolve(root, 'packages/db/migrations/0012_contract_health.sql');
+const migration24 = resolve(root, 'packages/db/migrations/0024_contract_health.sql');
 const backfill = resolve(root, 'scripts/backfill-current-value-currency.sql');
 const precompute = resolve(root, 'scripts/precompute.sql');
 
@@ -114,7 +133,7 @@ describe('served migrations', () => {
         ).trim(),
       ).toBe('1');
 
-      // 0012 adds the health-index foundation columns (contract quality spec §7.1) — additive
+      // 0024 adds the health-index foundation columns (contract quality spec §7.1) — additive
       // ALTERs only, deliberately NOT folded into 0000 (SQLite has no ADD COLUMN IF NOT EXISTS,
       // so duplicating them there would break the fresh-DB chain apply this test exercises).
       expect(
@@ -195,7 +214,8 @@ describe('served migrations', () => {
       readScript(dbPath, migration2);
       readScript(dbPath, migration3);
       readScript(dbPath, migration9);
-      readScript(dbPath, migration12);
+      for (const path of personMigrationPaths) readScript(dbPath, path);
+      readScript(dbPath, migration24);
       readScript(dbPath, backfill);
       readScript(dbPath, precompute);
 

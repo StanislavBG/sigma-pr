@@ -2,12 +2,15 @@
 // corpus (contracts 145652, 189325, 84818, 108677, 79382, 113291, 103903). The hazard is false positives,
 // so the controls (genuine increment, uncorrectable, normal increase) matter as much as the hits.
 import { describe, expect, it } from 'vitest';
-import {
-  classifyAmendmentValue,
-  restatedValueAfter,
-  isGenuineIncrement,
-  type AmendmentValueInput,
-} from './amendment-total';
+import { classifyAmendmentValue, type AmendmentValueInput } from './amendment-total';
+
+// The corrected value_after when the text confirms a double-count, else null.
+const restatedValueAfter = (input: AmendmentValueInput): number | null => {
+  const t = classifyAmendmentValue(input);
+  return t.kind === 'total_restated' || t.kind === 'unchanged_restated' ? t.correctedAfter : null;
+};
+const isGenuineIncrement = (input: AmendmentValueInput) =>
+  classifyAmendmentValue(input).kind === 'genuine_increment';
 
 const mk = (
   valueBefore: number,
@@ -344,5 +347,18 @@ describe('#305 amendment value double-count heuristic', () => {
         mk(700, 1934.56, 1234.56, 'BGN', 'Общата стойност на договора се променя на 1,234.56 лв.'),
       ),
     ).toBe(1234.56);
+  });
+});
+
+describe('#305 figures too long to be a number', () => {
+  it('never takes a runaway digit string for the delta', () => {
+    const text = (figure: string) => `Цената на договора се увеличава с ${figure} лв. без ДДС`;
+    expect(
+      classifyAmendmentValue(mk(100000, 250000, 150000, 'BGN', text('9'.repeat(400)))),
+    ).toEqual({ kind: 'none' });
+    // Control: the same wording with the real figure is a genuine increment.
+    expect(classifyAmendmentValue(mk(100000, 250000, 150000, 'BGN', text('150 000')))).toEqual({
+      kind: 'genuine_increment',
+    });
   });
 });
