@@ -233,6 +233,21 @@ describe('estimateYoyGrowth', () => {
     expect(g.insufficient).toBe(false);
   });
 
+  it('skips an isolated YYYY / YYYY-Qn row in an otherwise monthly series instead of throwing (one dirty row must not sink /analytics)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const points: TrendPoint[] = [
+      ...year(2021, 100, 50),
+      ...year(2022, 120, 55),
+      ...year(2023, 144, 60.5),
+      { period: '2026', valueEur: 999, contracts: 999, partial: false },
+      { period: '2022-Q1', valueEur: 999, contracts: 999, partial: false },
+    ];
+    expect(() => estimateYoyGrowth(points)).not.toThrow();
+    expect(estimateYoyGrowth(points).value).toBeCloseTo(1.2, 5);
+    expect(warn.mock.calls[0]![0]).toContain('skipped 2 point(s)');
+    warn.mockRestore();
+  });
+
   it('groups monthly points into full calendar years before computing ratios (/analytics granularity)', () => {
     // /analytics feeds this with `granularity: 'month'` series (365-ish rows/yr, not one row/yr). A
     // naive "recent N points" implementation would treat 24 monthly points as 2 short years; the

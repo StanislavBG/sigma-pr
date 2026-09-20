@@ -87,6 +87,21 @@ describe('getSpendingTrend', () => {
     ]);
   });
 
+  it('narrows points and totalValueEur to the selected year but keeps every year card', async () => {
+    const all = await getSpendingTrend(fake().db, {});
+    const narrowed = await getSpendingTrend(fake().db, { year: '2022' });
+    expect(narrowed.points).toHaveLength(12); // 2022-01 .. 2022-12 of the zero-filled series
+    expect(narrowed.points.every((pt) => pt.period.startsWith('2022'))).toBe(true);
+    expect(narrowed.totalValueEur).toBe(4000);
+    expect(narrowed.years).toEqual(all.years); // 2023 stays reachable
+    expect(all.totalValueEur).toBe(9000);
+  });
+
+  it('ignores a malformed year instead of narrowing to nothing', async () => {
+    const { points } = await getSpendingTrend(fake().db, { year: "20';--" });
+    expect(points).toHaveLength(13);
+  });
+
   it('never computes YoY against a non-adjacent year when a whole year is missing', async () => {
     // Data for 2020 and 2022 only — 2021 is a gap year. 2022's YoY must NOT be computed against
     // 2020: the gap is zero-filled and the YoY lookup is strictly year-1, so 2022 yields null.

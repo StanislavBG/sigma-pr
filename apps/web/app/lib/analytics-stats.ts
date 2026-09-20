@@ -175,10 +175,12 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
   // months===12 check for every year and fall through to a flat {value:1,count:1} that reads as
   // "no growth" instead of "wrong input" — assert instead so a future non-month caller fails loud.
   // A single malformed `period` is a different failure mode, though: `points` comes straight from
-  // the DB, so a NULL/empty/unexpected-format row must not take the whole route down with it — it is
-  // dropped (with a diagnostic) rather than thrown, while a systematic quarter/year series (a real
-  // caller bug) still throws.
+  // the DB, so a NULL/empty/unexpected-format row — including one isolated `YYYY` / `YYYY-Qn` row —
+  // must not take the whole route down with it. Those are dropped (with a diagnostic); only a
+  // SYSTEMATICALLY non-monthly series (more quarter/year rows than monthly ones, i.e. a real caller
+  // bug) still throws.
   const monthly: TrendPoint[] = [];
+  const coarse: string[] = [];
   let skipped = 0;
   for (const p of points) {
     if (typeof p.period === 'string' && /^\d{4}-\d{2}$/.test(p.period)) {
@@ -186,11 +188,14 @@ export function estimateYoyGrowth(points: TrendPoint[]): GrowthFactors {
       continue;
     }
     if (typeof p.period === 'string' && QUARTER_OR_YEAR_PERIOD.test(p.period)) {
-      throw new Error(
-        `estimateYoyGrowth: expected a monthly (YYYY-MM) series, got period "${p.period}" — quarter/year granularity is not supported`,
-      );
+      coarse.push(p.period);
     }
     skipped += 1;
+  }
+  if (coarse.length > monthly.length) {
+    throw new Error(
+      `estimateYoyGrowth: expected a monthly (YYYY-MM) series, got period "${coarse[0]}" — quarter/year granularity is not supported`,
+    );
   }
   if (skipped > 0) {
     console.warn(

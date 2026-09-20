@@ -76,10 +76,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const [trend, stats, fetchedContracts] = await Promise.all([
     // Faceted by the selected CPV groups (one aggregate scan; all groups when nothing is selected),
-    // so the combo chart, year cards and totals all re-run server-side on real data.
+    // so the combo chart, year cards and totals all re-run server-side on real data. The selected year
+    // narrows the chart and totals strip (the year cards stay whole so other years remain one click away).
     getSpendingTrend(
       db,
-      { granularity, cpvGroups: cpvSel, includeCurrent: cur },
+      { granularity, cpvGroups: cpvSel, includeCurrent: cur, year },
       { includeSectors: false },
     ),
     getCpvGroupStats(db, 10),

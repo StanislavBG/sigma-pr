@@ -67,7 +67,7 @@ describe('/trends loader — param validation', () => {
     });
     expect(q.getSpendingTrend).toHaveBeenCalledWith(
       DB,
-      { granularity: 'quarter', cpvGroups: [], includeCurrent: false },
+      { granularity: 'quarter', cpvGroups: [], includeCurrent: false, year: null },
       { includeSectors: false },
     );
   });
@@ -98,7 +98,7 @@ describe('/trends loader — param validation', () => {
     });
     expect(q.getSpendingTrend).toHaveBeenCalledWith(
       DB,
-      expect.objectContaining({ granularity: 'month', includeCurrent: true }),
+      expect.objectContaining({ granularity: 'month', includeCurrent: true, year: '2024' }),
       expect.anything(),
     );
   });

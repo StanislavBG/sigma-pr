@@ -38,8 +38,11 @@ export const MAX_CPV_GROUP_SELECTION = 10;
 /**
  * The обзор lenses' CPV multi-select (`?cpv=45233&cpv=33600` or `?cpv=45233,33600` on /trends):
  * validated 5-digit group codes only, deduped, order-preserving, capped at MAX_CPV_GROUP_SELECTION.
- * Malformed or excess codes are dropped before they reach a filter or mint an edge-cache key
- * variant (CWE-349).
+ * Malformed or excess codes are dropped before they reach a filter or the loader's SQL fan-out.
+ * This bounds LOADER work only: the edge-cache key is built separately from the raw canonical
+ * `cpv` params (workers/cache-key.ts), so it does not bound key cardinality. Unifying the CPV
+ * order/validation logic across filters.ts, query-params.ts and cache-key.ts is a deliberately
+ * deferred follow-up (after #169/#170/#172 land) rather than half-done here.
  */
 export function cpvGroupSelection(sp: URLSearchParams): string[] {
   const all = sp
