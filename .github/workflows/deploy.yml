@@ -288,8 +288,7 @@ jobs:
       # precompute.sql / derive-contract-features.sql (both run on the served D1) read or write
       # tenders.estimated_value_eur, contracts.{exemption_legal_basis,outside_zop,dps_contract}.
       # The migration ledger is empty on this D1 (see above), so apply it column-by-column,
-      # probing pragma_table_info first — SQLite has no ADD COLUMN IF NOT EXISTS. See
-      # docs/review-round-2026-09.md ("0024 on the served D1").
+      # probing pragma_table_info first — SQLite has no ADD COLUMN IF NOT EXISTS.
       - name: Ensure contract-health columns exist
         if: steps.guard.outputs.ok == 'true'
         run: |

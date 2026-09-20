@@ -20,7 +20,6 @@
 -- collide). deploy.yml therefore applies these nine ALTERs itself in the "Ensure contract-health
 -- columns exist" step (probe pragma_table_info, ALTER only when absent). The served D1 does need
 -- them: ship-domain.mjs copies every source column and derive-contract-features.sql reads them.
--- Write-up: docs/review-round-2026-09.md ("0024 on the served D1").
 -- These nine ALTERs are purely additive (new nullable columns on existing tables) and read
 -- no state introduced by 0012-0023, so applying after them in sorted order (fresh D1, CI, and the
 -- work-DB backfill in scripts/import.mjs) is deterministic and safe.
