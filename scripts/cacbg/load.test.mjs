@@ -15,15 +15,16 @@ import { isSealedFact } from '../tr/evidence.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
-import { seedVerdicts, readFixtureDeed } from './tr-fixture.mjs';
+import { seedVerdicts, fixtureRegistry, sealFixtureFilings } from './tr-fixture.mjs';
 
 const SUPP_SALT = 'test-salt-9f3a'; // stand-in for the CI secret SUPPRESSION_SALT
 let dir, DB, STAGING, TR_DB, TR_RAW;
 
-function runLoad(extraEnv = {}) {
+function runLoad(extraEnv = {}, args = [], seal = true) {
+  if (seal) sealFixtureFilings(STAGING);
   execFileSync(
     'node',
-    ['--import', path.join(HERE, 'register-ts.mjs'), path.join(HERE, 'load.mjs')],
+    ['--import', path.join(HERE, 'register-ts.mjs'), path.join(HERE, 'load.mjs'), ...args],
     {
       cwd: ROOT,
       env: {
@@ -40,97 +41,40 @@ function runLoad(extraEnv = {}) {
 }
 
 /**
- * Build a Trade Register cache + raw deeds covering the fixture's winners.
+ * Decide the Trade Register verdicts covering the fixture's winners, from fixture registry facts.
  *
- * `spec[eik]` describes one deed: `owners` / `managers` are full names placed in SEPARATE registry
- * entities (so the entity-boundary rule is exercised end to end), `form` is the numeric legalForm and
- * `suffix` the ЗТРРЮЛНЦ form on fullName. Anything omitted from `spec` is still cached — as a deed
- * naming somebody else — because the loader must FAIL CLOSED on a cache that does not cover every
- * candidate, and a test that silently left ЕИК uncovered would exercise that path by accident.
+ * `spec[eik]` describes one company: `owners` / `managers` are full names of persons standing in those
+ * roles — each its own registered holder — `form` is the legal form (a numeric code, mapped by
+ * fixtureRegistry) and `suffix` the ЗТРРЮЛНЦ form on the name. Anything omitted from `spec` is still read —
+ * as a company naming somebody else — because the loader must FAIL CLOSED on evidence that does not cover
+ * every candidate, and a test that silently left an ЕИК unread would exercise that path by accident.
+ * `omit` leaves an ЕИК unread on purpose.
  */
-function buildTrCache(dbFile, rawDir, spec = {}, { omit = [] } = {}) {
-  fs.mkdirSync(rawDir, { recursive: true });
-  const cache = new DatabaseSync(dbFile);
-  cache.exec(`CREATE TABLE IF NOT EXISTS deeds (
-    eik TEXT PRIMARY KEY, status TEXT NOT NULL, http_status INTEGER, fetched_at TEXT NOT NULL,
-    raw_path TEXT, body_sha256 TEXT, legal_form_code INTEGER, legal_form_verdict TEXT,
-    seat_normalized TEXT, seat_entry_date TEXT, latest_own_entry_date TEXT,
-    attempts INTEGER NOT NULL DEFAULT 1, outside_reason TEXT)`);
-  const src = new DatabaseSync(DB, { readOnly: true });
-  const eiks = src
-    .prepare('SELECT eik_normalized e FROM bidders WHERE eik_normalized IS NOT NULL')
-    .all()
-    .map((r) => r.e);
-  src.close();
-
-  const container = (t) =>
-    `<div class='record-container record-container--preview'><p class='field-text'>${t}</p></div>`;
-  const joinEntities = (names) => names.map(container).join(`<hr class='hr--report' />`);
-
-  for (const eik of eiks) {
-    if (omit.includes(eik)) continue;
-    const d = spec[eik] ?? {};
-    if (d.outsideTr) {
-      cache
-        .prepare(
-          'INSERT OR REPLACE INTO deeds(eik,status,fetched_at,outside_reason) VALUES(?,?,?,?)',
-        )
-        .run(eik, 'outside_tr', '2026-08-05T00:00:00Z', 'HTTP 200, empty body');
-      continue;
-    }
-    const fields = [];
-    const push = (nameCode, names, entryDate) =>
-      names?.length &&
-      fields.push({
-        nameCode,
-        htmlData: joinEntities(names),
-        fieldEntryNumber: '20110502101007',
-        fieldEntryDate: `${entryDate ?? '2011-05-02'}T00:00:00`,
-      });
-    push('CR_F_19_L', d.owners ?? ['НЯКОЙ ДРУГ СОБСТВЕНИК'], d.ownEntryDate);
-    push('CR_F_7_L', d.managers, d.ownEntryDate);
-    if (d.seat) push('CR_F_5_L', [`Населено място: ${d.seat}`], d.seatEntryDate ?? d.ownEntryDate);
-    const deed = {
-      uic: eik,
-      fullName: `"ФИКС" ${d.suffix ?? 'ООД'}`,
-      legalForm: d.form ?? 4,
-      sections: [{ subDeeds: [{ groups: [{ fields }] }] }],
-    };
-    fs.writeFileSync(path.join(rawDir, `${eik}.json`), JSON.stringify(deed));
-    cache
-      .prepare(
-        `INSERT OR REPLACE INTO deeds(eik,status,http_status,fetched_at,raw_path,legal_form_code,
-           legal_form_verdict,seat_normalized,latest_own_entry_date)
-         VALUES(?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        eik,
-        'fetched',
-        200,
-        '2026-08-05T00:00:00Z',
-        `${eik}.json`,
-        d.form ?? 4,
-        d.suffix && /АД|КДА/.test(d.suffix) ? 'joint_stock' : 'closely_held',
-        d.seat ? d.seat.replace(/^гр\.\s*/, '').toUpperCase() : null,
-        d.ownEntryDate ?? '2011-05-02',
-      );
-  }
-  cache.close();
-
-  // The deeds alone decide nothing now: since ADR-0037 the verdict is reached by the crawler and the
-  // loader only reads it. Run the REAL decision over these fixture deeds, so these tests keep
-  // exercising the evidence ladder end to end instead of hand-written verdict rows.
+function buildTrCache(dbFile, _rawDir, spec = {}, { omit = [] } = {}) {
   seedVerdicts({
     workDb: DB,
     staging: STAGING,
     trDb: dbFile,
-    deedFor: (eik) => {
-      if (omit.includes(eik)) return null; // never reached — no verdict, an incomplete cache
-      if ((spec[eik] ?? {}).outsideTr) return { outsideTr: true };
-      return readFixtureDeed(rawDir, eik);
+    registryFor: (eik) => {
+      if (omit.includes(eik)) return null; // never read — no verdict, an incomplete registry
+      const d = spec[eik] ?? {};
+      if (d.outsideTr) return { outsideTr: true };
+      return {
+        registry: fixtureRegistry(eik, {
+          owners: d.owners ?? ['НЯКОЙ ДРУГ СОБСТВЕНИК'],
+          pastOwners: d.pastOwners ?? [],
+          managers: d.managers ?? [],
+          seat: d.seat ?? null,
+          seatEntryDate: d.seatEntryDate ?? null,
+          ownEntryDate: d.ownEntryDate ?? '2011-05-02',
+          form: d.form ?? 4,
+          suffix: d.suffix ?? 'ООД',
+        }),
+      };
     },
   });
 }
+
 const open = () => new DatabaseSync(DB, { readOnly: true });
 
 before(() => {
@@ -144,7 +88,7 @@ before(() => {
   // minimal slice of the winner schema that load.mjs joins
   const db = new DatabaseSync(DB);
   db.exec(`
-    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT);
+    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT, ownership_kind TEXT);
     CREATE TABLE authorities(id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE tenders(id TEXT PRIMARY KEY, authority_id TEXT);
     CREATE TABLE contracts(id TEXT PRIMARY KEY, tender_id TEXT, bidder_id TEXT, signed_at TEXT, amount_eur REAL);
@@ -152,80 +96,78 @@ before(() => {
     INSERT INTO authorities VALUES ('auth:1','ТЕСТ ВЕДОМСТВО'),('auth:2','ДРУГО ВЕДОМСТВО'),('auth:3','ОБЩИНА А; ТЕСТ ВЕДОМСТВО; ОБЩИНА Б');
     INSERT INTO tenders VALUES ('t1','auth:1'),('t2','auth:2'),('t3','auth:3');
     -- distinctive winner (number token) → tier B
-    INSERT INTO bidders VALUES ('eik:111111119','ДИСТИНКТ ТЕХ 7 ЕООД','111111119',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:111111119','ДИСТИНКТ ТЕХ 7 ЕООД','111111119',1,'София');
     -- generic name shared by TWO ЕИК → collision, must be quarantined
-    INSERT INTO bidders VALUES ('eik:222222229','ГЕНЕРИК ООД','222222229',1,'Пловдив');
-    INSERT INTO bidders VALUES ('eik:333333338','Генерик ООД','333333338',1,'Варна');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:222222229','ГЕНЕРИК ООД','222222229',1,'Пловдив');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:333333338','Генерик ООД','333333338',1,'Варна');
     -- generic single-ЕИК winner with a seat → tier A when declared seat matches, tier C when not
-    INSERT INTO bidders VALUES ('eik:444444447','СИЙ ЕООД','444444447',1,'Бургас');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:444444447','СИЙ ЕООД','444444447',1,'Бургас');
     INSERT INTO contracts VALUES ('c1','t1','eik:111111119','2023-05-01',100000); -- ДИСТИНКТ ← ТЕСТ ВЕДОМСТВО
     INSERT INTO contracts VALUES ('c3','t3','eik:111111119','2024-06-01',25000);  -- ДИСТИНКТ ← blob (own via split)
     INSERT INTO contracts VALUES ('c2','t2','eik:444444447','2022-03-01',50000);
     -- both colliding ГЕНЕРИК ЕИК are real winners → declared_eik can resolve a certain ЕИК behind an ambiguous name
     INSERT INTO contracts VALUES ('c4','t2','eik:222222229','2023-07-01',70000);
     INSERT INTO contracts VALUES ('c5','t2','eik:333333338','2023-08-01',80000);
-    -- distinctive winner MANAGED by two different officials → ex-officio public board (ADR-0019)
-    INSERT INTO bidders VALUES ('eik:555555556','ХОЛДИНГ 9 ЕАД','555555556',1,'София');
+    -- a state enterprise its two officials manage → a held position, not a private interest (ADR-0047)
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement,ownership_kind) VALUES ('eik:555555556','ХОЛДИНГ 9 ЕООД','555555556',1,'София','state');
     INSERT INTO contracts VALUES ('c6','t1','eik:555555556','2023-09-01',500000);
     -- two distinctive winners for the divestment (E11) case: Николай owns ДИВЕСТ 1 in 2019, then ДИВЕСТ 2
     -- in 2022 — his later ownership filing omits ДИВЕСТ 1, so that stake is withdrawn (divested), ДИВЕСТ 2 stays.
-    INSERT INTO bidders VALUES ('eik:666666665','ДИВЕСТ 1 ЕООД','666666665',1,'София');
-    INSERT INTO bidders VALUES ('eik:777777773','ДИВЕСТ 2 ЕООД','777777773',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:666666665','ДИВЕСТ 1 ЕООД','666666665',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:777777773','ДИВЕСТ 2 ЕООД','777777773',1,'София');
     INSERT INTO contracts VALUES ('c7','t1','eik:666666665','2019-04-01',300000);
     INSERT INTO contracts VALUES ('c8','t1','eik:777777773','2022-04-01',400000);
     -- FAMILY case: a close relative of Кмет owns ЕВРОСТРОЙ 21 ЕООД, which won from Кмет's OWN institution (ОБЩИНА ТЕСТ)
     INSERT INTO authorities VALUES ('auth:4','ОБЩИНА ТЕСТ');
     INSERT INTO tenders VALUES ('t4','auth:4');
-    INSERT INTO bidders VALUES ('eik:888888884','ЕВРОСТРОЙ 21 ЕООД','888888884',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:888888884','ЕВРОСТРОЙ 21 ЕООД','888888884',1,'София');
     INSERT INTO contracts VALUES ('c9','t4','eik:888888884','2023-06-01',250000);
     -- SECURITIES case: a self holding of LISTED joint-stock shares — must NOT become an ownership link
-    INSERT INTO bidders VALUES ('eik:999999998','ЛИСТЕД ТЕСТ АД','999999998',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:999999998','ЛИСТЕД ТЕСТ АД','999999998',1,'София');
     INSERT INTO contracts VALUES ('c10','t1','eik:999999998','2023-06-01',60000);
     -- ZERO-CONTRACT case (I5): a distinctive winner name with NO contract rows → a name match that carries
     -- no procurement conflict. Collected, but must NEVER publish („0 договори · 0 €").
-    INSERT INTO bidders VALUES ('eik:121212129','НУЛА ТЕХ 3 ЕООД','121212129',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:121212129','НУЛА ТЕХ 3 ЕООД','121212129',1,'София');
     -- B1 divest-to-ZERO: Пълен owns ДИВЕСТ ЗЕРО (2019), then files an EMPTY declaration (2023) listing NO
     -- stake at all. The empty filing advances his horizon past 2019 → the 2019 stake is withdrawn.
-    INSERT INTO bidders VALUES ('eik:101010104','ДИВЕСТ ЗЕРО 4 ЕООД','101010104',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:101010104','ДИВЕСТ ЗЕРО 4 ЕООД','101010104',1,'София');
     INSERT INTO contracts VALUES ('c11','t1','eik:101010104','2019-05-01',150000);
     -- §1.3 unparseable filing YEAR: Безгодин owns ДИВЕСТ БЕЗГОД (2019), then files a later declaration whose
     -- <year> is unreadable while its FOLDER carries 2023. The folder must supply the horizon, or the filing
     -- is dropped, the horizon never advances, and a sold stake stays published — a stale public claim.
-    INSERT INTO bidders VALUES ('eik:212121218','ДИВЕСТ БЕЗГОД 9 ЕООД','212121218',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:212121218','ДИВЕСТ БЕЗГОД 9 ЕООД','212121218',1,'София');
     INSERT INTO contracts VALUES ('c17','t1','eik:212121218','2019-05-01',120000);
     -- §1.3 positive control: Дрънкан's later filing is datable by NEITHER <year> NOR folder. It must be
     -- ignored, never guessed — an undatable filing is no evidence of a sale, so this stake stays published.
-    INSERT INTO bidders VALUES ('eik:232323231','ДРЪНКАН ТЕХ 10 ЕООД','232323231',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:232323231','ДРЪНКАН ТЕХ 10 ЕООД','232323231',1,'София');
     INSERT INTO contracts VALUES ('c18','t1','eik:232323231','2019-05-01',110000);
-    -- ADR-0035 winner-vs-non-winner homonym: „ХОМОНИМ ТРЕЙД" is a GENERIC фирма (two content words) and the
-    -- sole WINNER holding it. Хомоним Иванов Тестов declared a stake in a company of that name — but the one
-    -- he owns never bid, so the resolver lands on this winner instead. This winner's deed happens to name a
-    -- HOMONYM (identical three tokens), which under a name-only rung 2 „proves" a link false in both halves.
-    -- Nothing corroborates the company (no declared ЕИК, no declared seat), so it must be withheld.
-    INSERT INTO bidders VALUES ('eik:242424248','ХОМОНИМ ТРЕЙД ЕООД','242424248',1,'София');
+    -- „ХОМОНИМ ТРЕЙД" is a generic фирма and the sole WINNER holding it: the name leads to this ЕИК, and the
+    -- deed names a person with the declarant's three names, so the link publishes (tr-rules-8). A фирма is
+    -- nationally unique, and the declared company and person both matching another is not a case we hold for.
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:242424248','ХОМОНИМ ТРЕЙД ЕООД','242424248',1,'София');
     INSERT INTO contracts VALUES ('c19','t1','eik:242424248','2023-05-01',95000);
     -- N10 canonicalization: Канонов owns КАНОН ТЕХ 5, filing „МВР" one year and the full ministry name the
     -- next → ONE identity, ONE link (not a split). Distinctive name (number) → tier B publishable.
-    INSERT INTO bidders VALUES ('eik:131313136','КАНОН ТЕХ 5 ЕООД','131313136',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:131313136','КАНОН ТЕХ 5 ЕООД','131313136',1,'София');
     INSERT INTO contracts VALUES ('c12','t1','eik:131313136','2022-05-01',90000);
     -- N10 empty-institution: Безинст owns a distinctive winner but declares NO institution → cannot be
     -- attributed without risking a homonym merge → forms NO link.
-    INSERT INTO bidders VALUES ('eik:141414141','БЕЗИНСТ ТЕХ 6 ЕООД','141414141',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:141414141','БЕЗИНСТ ТЕХ 6 ЕООД','141414141',1,'София');
     INSERT INTO contracts VALUES ('c13','t1','eik:141414141','2023-05-01',80000);
     -- #226 cross-type divest: Интер owns ИНТЕР ТЕХ 8 (distinctive → tier B) declared ONLY in an INTERESTS
     -- declaration (2020). His later 2023 ASSET declaration lists no company → must NOT withdraw this stake.
-    INSERT INTO bidders VALUES ('eik:161616163','ИНТЕР ТЕХ 8 ЕООД','161616163',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:161616163','ИНТЕР ТЕХ 8 ЕООД','161616163',1,'София');
     INSERT INTO contracts VALUES ('c14','t1','eik:161616163','2020-05-01',120000);
     -- #226 headline dedup: TWO different officials each own a stake in the SAME winner (ПАРТНЬОРИ 5, €600k).
     -- Both publish (distinctive name → B_distinctive), so the build summary must count that winner's € ONCE,
     -- not twice — the load-side sibling of the UI conflictHeadline per-ЕИК money dedup.
-    INSERT INTO bidders VALUES ('eik:181818187','ПАРТНЬОРИ 5 ЕООД','181818187',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:181818187','ПАРТНЬОРИ 5 ЕООД','181818187',1,'София');
     INSERT INTO contracts VALUES ('c15','t1','eik:181818187','2022-06-01',600000);
-    -- FAMILY positive control (#279): identical in shape to Кмет's case but the official DECLARED the
-    -- company's seat, which is what confirms the company's identity when the registered owner is the
-    -- relative whose name we never hold. Without this case „family published: 0" would be
-    -- indistinguishable from a structurally dead path (ADR-0027's false-zero lesson).
-    INSERT INTO bidders VALUES ('eik:191919199','СЕМЕЕН ДОМ ЕООД','191919199',1,'Русе');
+    -- FAMILY positive control (#279): identical in shape to Кмет's case but the register shows the relative
+    -- the declaration names for the stake, which confirms the company when the official holds no role in it.
+    -- Without this case „family published: 0" would be indistinguishable from a structurally dead path
+    -- (ADR-0027's false-zero lesson).
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:191919199','СЕМЕЕН ДОМ ЕООД','191919199',1,'Русе');
     INSERT INTO contracts VALUES ('c16','t4','eik:191919199','2023-07-01',180000);
   `);
   db.close();
@@ -335,7 +277,7 @@ before(() => {
       seat: 'Варна',
       controlHash: 'H6',
     },
-    // Борис and Виктор BOTH manage ХОЛДИНГ 9 (no ownership) → two declarants of one company = ex_officio_board
+    // Борис and Виктор manage ХОЛДИНГ 9, a state enterprise (no ownership) → ex_officio_board
     {
       folder: '2024',
       xmlFile: 'G.xml',
@@ -345,7 +287,7 @@ before(() => {
       institution: 'U',
       person: 'Борис Иванов Манолов',
       position: 'член на съвет',
-      entity: 'ХОЛДИНГ 9 ЕАД',
+      entity: 'ХОЛДИНГ 9 ЕООД',
       kind: 'management',
       detail: 'член на надзорен съвет',
       timing: 'current',
@@ -361,7 +303,7 @@ before(() => {
       institution: 'U',
       person: 'Виктор Иванов Асенов',
       position: 'член на съвет',
-      entity: 'ХОЛДИНГ 9 ЕАД',
+      entity: 'ХОЛДИНГ 9 ЕООД',
       kind: 'management',
       detail: 'член на надзорен съвет',
       timing: 'current',
@@ -421,7 +363,7 @@ before(() => {
       holderRelation: 'related',
       controlHash: 'H11',
     },
-    // FAMILY positive control: same as Кмет, but with the seat declared → rung 3 confirms the company.
+    // FAMILY positive control: same as Кмет, but the register shows the relative the declaration names.
     {
       folder: '2024',
       xmlFile: 'K2.xml',
@@ -687,7 +629,21 @@ before(() => {
     path.join(STAGING, 'holdings.jsonl'),
     holdings.map((h) => JSON.stringify(h)).join('\n') + '\n',
   );
-  fs.writeFileSync(path.join(STAGING, 'related.jsonl'), '');
+  // The holder Кметица's declaration names for her family stake — internal, read to confirm it (ADR-0044).
+  fs.writeFileSync(
+    path.join(STAGING, 'related.jsonl'),
+    JSON.stringify({
+      folder: '2024',
+      xmlFile: 'K2.xml',
+      year: '2023',
+      person: 'Кметица Иванова Втора',
+      institution: 'ОБЩИНА ТЕСТ',
+      related_name: 'Роднина Втора Тестова',
+      related_kind: 'stake_holder',
+      info: 'СЕМЕЕН ДОМ ЕООД',
+      timing: 'annual',
+    }) + '\n',
+  );
   // filings.jsonl (B1): one record per DECLARATION — every holding's filing PLUS empty/no-material filings.
   // Derive a filing from each holding, then add Пълен's later EMPTY 2023 filing (no holdings row) so his
   // 2019 stake is caught as divest-to-zero.
@@ -742,23 +698,27 @@ before(() => {
   });
   fs.writeFileSync(
     path.join(STAGING, 'filings.jsonl'),
-    filings.map((f) => JSON.stringify(f)).join('\n') + '\n',
+    filings
+      .map((f) =>
+        JSON.stringify({
+          ...f,
+          declarationType: f.template === 'assets' ? 'Annualy' : 'interests',
+        }),
+      )
+      .join('\n') + '\n',
   );
 
   // The Trade Register evidence each link now has to rest on (#279, ADR-0033). Shaped so every
   // existing case keeps the INTENT it was written for, under the new rule rather than the old one:
   //   • a person the register names as owner/manager  → „Документ"
-  //   • a declared seat matching the registered seat  → „Потвърдено"
   //   • a declared ЕИК                                → „Потвърдено" (never name-gated, ADR-0028)
+  //   • a relative the declaration names, registered  → „Потвърдено" (family stakes)
   //   • nobody we can match and nothing to confirm    → „Неизвестна", held
   buildTrCache(TR_DB, TR_RAW, {
-    111111119: { managers: ['ИВАН ПЕТРОВ ТЕСТОВ'] }, // manages → document/manager (class keeps it internal)
-    444444447: { seat: 'гр. Бургас' }, // Петър declared Бургас → confirmed; Георги declared none → held
-    555555556: {
-      managers: ['БОРИС ИВАНОВ МАНОЛОВ', 'ВИКТОР ИВАНОВ АСЕНОВ'],
-      suffix: 'ЕАД',
-      form: 5,
-    },
+    111111119: { managers: ['ИВАН ПЕТРОВ ТЕСТОВ'] }, // manages a private company → document/manager, published
+    // Петър is registered → document; Георги is not, and his declared seat changes nothing → held
+    444444447: { owners: ['ПЕТЪР ИВАНОВ НИКОЛОВ'], seat: 'гр. Бургас' },
+    555555556: { managers: ['БОРИС ИВАНОВ МАНОЛОВ', 'ВИКТОР ИВАНОВ АСЕНОВ'], suffix: 'ЕООД' },
     666666665: { owners: ['СЪВСЕМ ДРУГ СОБСТВЕНИК'] }, // Николай absent → his divestment stands
     777777773: { owners: ['НИКОЛАЙ ИВАНОВ ДИВЕСТОВ'] }, // still the registered owner → document
     888888884: { owners: ['РОДНИНА КМЕТОВА'] }, // family: the RELATIVE owns it, not the official
@@ -768,19 +728,55 @@ before(() => {
     161616163: { owners: ['ИНТЕР ИВАНОВ ТЕСТОВ'] },
     181818187: { owners: ['АЛФА ИВАНОВ ПАРТНЬОРОВ', 'БЕТА ИВАНОВ ПАРТНЬОРОВ'] },
     121212129: { owners: ['НУЛА ИВАНОВ ТЕСТОВ'] },
-    191919199: { owners: ['РОДНИНА ВТОРА'], seat: 'гр. Русе' }, // family + declared seat → confirmed
-    // Безгодин is ABSENT from the deed (so §7 reconciliation cannot reverse the divestment) but his
-    // declared seat matches the registered one, so rung 3 says „Потвърдено" and the link PUBLISHES.
-    // Only the folder-dated divestment withdraws it — making the pre-fix failure the dangerous one.
-    212121218: { owners: ['ДРУГ СОБСТВЕНИК СЪВСЕМ'], seat: 'гр. София' },
+    191919199: { owners: ['РОДНИНА ВТОРА ТЕСТОВА'] }, // family + the named relative registered → confirmed
+    // Безгодин no longer stands in the deed (so §7 reconciliation cannot reverse the divestment) but the
+    // register shows him as a past owner, so rung 2 says „Документ" and the link PUBLISHES. Only the
+    // folder-dated divestment dates it — making the pre-fix failure the dangerous one.
+    212121218: { owners: ['ДРУГ СОБСТВЕНИК СЪВСЕМ'], pastOwners: ['БЕЗГОДИН ИВАНОВ ДИВЕСТОВ'] },
     232323231: { owners: ['ДРЪНКАН ИВАНОВ ТЕСТОВ'] }, // still the owner → the undatable filing changes nothing
-    // The homonym: the deed names someone with Хомоним's exact three tokens. Rung 2 matches — and must
-    // still withhold, because nothing says this is the company he declared.
+    // The deed names someone with Хомоним's exact three tokens: rung 2 matches and publishes.
     242424248: { owners: ['ХОМОНИМ ИВАНОВ ТЕСТОВ'] },
   });
 });
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+test('resolved sibling paths become source URLs without changing declaration IDs', () => {
+  const originals = ['holdings', 'related', 'filings'].map((name) => {
+    const file = path.join(STAGING, name + '.jsonl');
+    return [file, fs.readFileSync(file, 'utf8')];
+  });
+  try {
+    for (const [file, text] of originals)
+      fs.writeFileSync(
+        file,
+        text
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            const row = JSON.parse(line);
+            return JSON.stringify({ ...row, sourceFolder: row.folder.slice(0, 4) + 'y' });
+          })
+          .join('\n') + '\n',
+      );
+    runLoad();
+    const db = open();
+    const rows = db.prepare('SELECT id, folder_year, xml_file, source_url FROM declarations').all();
+    db.close();
+    assert(rows.length > 0);
+    for (const row of rows) {
+      assert.equal(row.id, `decl:${row.folder_year}:${row.xml_file}`);
+      assert.equal(
+        row.source_url,
+        `https://register.cacbg.bg/${row.folder_year.slice(0, 4)}y/${row.xml_file}`,
+      );
+    }
+  } finally {
+    for (const [file, text] of originals) fs.writeFileSync(file, text);
+    runLoad();
+  }
+});
 
 test('resolves publish/held/quarantine tiers deterministically', () => {
   runLoad();
@@ -793,12 +789,11 @@ test('resolves publish/held/quarantine tiers deterministically', () => {
       .get(eik, person);
 
   const ivan = link('111111119', 'Иван Петров Тестов');
-  // management_role never surfaces → status 'internal', NOT 'published' (a direct D1 reader must not see a
-  // non-surfaced official+company row labelled published; the served query also filters by interest_class).
-  assert.equal(ivan.status, 'internal');
+  // A private company's manager is treated as its owner (ADR-0047): published, the relation says which.
+  assert.equal(ivan.status, 'published');
   assert.equal(ivan.publish_tier, 'document'); // the register names him a manager of this company
   assert.equal(ivan.relation, 'manages');
-  assert.equal(ivan.interest_class, 'management_role'); // manages, sole declarant → ambiguous, not headline
+  assert.equal(ivan.interest_class, 'private_ownership');
   assert.equal(ivan.own_institution, 'exact');
   assert.equal(ivan.contemporaneous, 1);
   // contract facts: both of ДИСТИНКТ's contracts summed deterministically
@@ -826,11 +821,11 @@ test('resolves publish/held/quarantine tiers deterministically', () => {
   );
 
   const petar = link('444444447', 'Петър Иванов Николов');
-  assert.equal(petar.publish_tier, 'confirmed'); // declared seat == registered seat
+  assert.equal(petar.publish_tier, 'document'); // the register names him in the company
   assert.equal(petar.status, 'published');
   assert.equal(petar.interest_class, 'private_ownership'); // declared a share → the headline conflict signal
 
-  // two officials manage the SAME company → deterministically classed ex-officio (public board), not private
+  // officials who manage a state enterprise hold a position there — never a private interest
   const boris = link('555555556', 'Борис Иванов Манолов');
   const viktor = link('555555556', 'Виктор Иванов Асенов');
   assert.equal(boris.interest_class, 'ex_officio_board');
@@ -841,14 +836,14 @@ test('resolves publish/held/quarantine tiers deterministically', () => {
   assert.equal(viktor.status, 'internal');
 
   const georgi = link('444444447', 'Георги Иванов Стоянов');
-  assert.equal(georgi.publish_tier, 'unknown'); // same company, but he declared no seat → nothing confirms
+  assert.equal(georgi.publish_tier, 'unknown'); // same company, but the register does not show him
   assert.equal(georgi.status, 'held');
 
   // E11 divestment: Николай's 2019 stake in ДИВЕСТ 1 is superseded by a 2022 filing that omits it → withdrawn;
   // his current ДИВЕСТ 2 stake stays published. A later ownership filing that drops a company ends that link.
   const gone = link('666666665', 'Николай Иванов Дивестов');
   const kept = link('777777773', 'Николай Иванов Дивестов');
-  assert.equal(gone.status, 'withdrawn'); // divested — excluded from the published surface
+  assert.equal(gone.status, 'held'); // unconfirmed company; history alone cannot publish
   assert.equal(gone.interest_class, 'private_ownership');
   assert.equal(gone.last_declared_year, '2019'); // dated to its last declaration, never asserted "current"
   assert.equal(kept.status, 'published');
@@ -878,9 +873,9 @@ test('resolves publish/held/quarantine tiers deterministically', () => {
   assert.equal(family.interest_class, 'family_ownership');
   // #279 NARROWS the family surface, and this is where it shows. The registered owner of a family
   // stake is the RELATIVE, whose name we deliberately never store (ADR-0010 item 4, ADR-0032 #2) — so
-  // rung 2 („Документ") can never fire for a family link, by construction. Its identity can only be
-  // confirmed by something the OFFICIAL declared: the seat, or the ЕИК. Кмет declared neither, so his
-  // link is now HELD rather than published. ADR-0032's decision is untouched — family publishes on the
+  // rung 2 („Документ") fires for a family link only if the official is registered too. Otherwise the
+  // company is confirmed by the declared ЕИК or by the register showing the relative the declaration
+  // names. Кмет's declaration names no holder and no ЕИК, so his link is HELD rather than published. ADR-0032's decision is untouched — family publishes on the
   // named surface exactly like self — but it now needs the same registry evidence as everything else.
   assert.equal(family.status, 'held');
   assert.equal(family.publish_tier, 'unknown');
@@ -888,9 +883,8 @@ test('resolves publish/held/quarantine tiers deterministically', () => {
   assert.equal(family.contemporaneous, 1);
   assert.equal(family.contract_value_eur, 250000);
   assert.equal(family.link_key, family.person_id + '|888888884|family'); // distinct from any self link
-  // NON-NEGOTIABLE (ADR-0032 #1): the relative's identity is NEVER stored — no family holder name reaches the
-  // DB, not even now that the link is public. Only holderRelation flows through; the name never leaves parse.
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM related_persons_internal').get().n, 0);
+  // The holder names stay in the internal table (ADR-0044): the one staged row, and nothing more.
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM related_persons_internal').get().n, 1);
   // §2 ал.3 ПЗР canary (rail #3): the build report buckets material family holdings by source template — every
   // family holding in this corpus is declared in an ASSET declaration, so the only bucket is 'assets'. A
   // non-'assets' bucket would mean a relative's stake leaked from a non-public source (consent/libel breach).
@@ -966,37 +960,31 @@ test('resolves publish/held/quarantine tiers deterministically', () => {
   const divZero = link('101010104', 'Пълен Иванов Дивестов');
   assert.equal(divZero.interest_class, 'private_ownership');
   assert.equal(divZero.last_declared_year, '2019'); // dated to its last declaration, never asserted current
-  assert.equal(divZero.status, 'withdrawn'); // caught by the empty later filing (B1)
+  assert.equal(divZero.status, 'held'); // unconfirmed company remains held despite the dated history
 
   // #226 (Todor B1) PER-TYPE horizon: Интер declared ИНТЕР ТЕХ 8 only in an INTERESTS declaration (2020) and
   // later filed only an ASSET declaration (2023) that, for him, lists no company. A per-person horizon reads
   // that asset-declaration silence as a sale and WITHDRAWS the stake; the per-type horizon must not — no later
   // INTERESTS filing omits the company. This link must stay PUBLISHED. (Guards against dropping a true link:
   // 13% of holders declare a stake only in the interests declaration.)
-  // ADR-0035 — the CRITICAL, end to end. Хомоним declared a stake in „ХОМОНИМ ТРЕЙД ЕООД"; the company he
-  // actually owns never bid, so `resolveEntity` resolved his declaration to the same-named WINNER, whose
-  // deed names a person with his exact three tokens. Rung 2 matches. It must NOT publish: the register
-  // proves someone of that name owns THIS company, not that this is the company he declared. `nameGlobally-
-  // Unique` cannot catch it — it ranges over bidders, and this winner is the only bidder with the name.
+  // tr-rules-8: the name leads to one ЕИК and the register shows a person with the declarant's three names
+  // in it — the link publishes with the registered role.
   const homonym = link('242424248', 'Хомоним Иванов Тестов');
-  assert.equal(homonym.publish_tier, 'document_uncorroborated');
-  assert.notEqual(homonym.status, 'published');
-  // The seal must record WHY it was withheld, and must not carry the role the rung refused to assert.
-  const homonymSeal = db
-    .prepare(
-      'SELECT evidence_kind, registry_role, matched_fact FROM interest_link_evidence WHERE link_key=?',
-    )
-    .get(homonym.link_key);
-  assert.equal(homonymSeal.evidence_kind, 'document_uncorroborated');
-  assert.equal(homonymSeal.registry_role, null);
-  assert.equal(homonymSeal.matched_fact, null);
+  assert.equal(homonym.publish_tier, 'document');
+  assert.equal(homonym.status, 'published');
+  assert.equal(
+    db
+      .prepare('SELECT registry_role FROM interest_link_evidence WHERE link_key=?')
+      .get(homonym.link_key).registry_role,
+    'owner',
+  );
 
   // §1.3 unparseable filing YEAR: Безгодин's later declaration has an unreadable <year> ('н/д') but a 2023
   // FOLDER. Dropping that record — the pre-fix behaviour — leaves his horizon at 2019, so `divested` stays
   // false and a stake he no longer holds keeps naming him on the public surface. The folder must date it.
   const noYear = link('212121218', 'Безгодин Иванов Дивестов');
   assert.equal(noYear.interest_class, 'private_ownership');
-  assert.equal(noYear.status, 'withdrawn');
+  assert.equal(noYear.status, 'published'); // the proven 2019 link remains historical
   // POSITIVE CONTROL: datable by NEITHER field ⇒ ignored, not guessed. The fallback must not become a
   // licence to invent a horizon — an undatable filing is no evidence of a sale, so this link stays up.
   const noDate = link('232323231', 'Дрънкан Иванов Тестов');
@@ -1066,8 +1054,8 @@ test('re-run is idempotent and honors the suppression list (contested link stays
   // idempotent: still exactly the same number of links + persons after a clean rebuild.
   // 20 links: 15 self (incl. withdrawn/held + the zero-contract 'internal' + Пълен's divest-to-zero
   // 'withdrawn' + Безгодин's folder-dated 'withdrawn' + Дрънкан's undatable-filing 'published' +
-  // Хомоним's ADR-0035 'document_uncorroborated' hold + Интер's per-type-kept published link) + 2 family (Кмет's, now held for want of registry evidence,
-  // and Кметица's seat-confirmed one) + Канонов's canonicalized single link +
+  // Хомоним's published link + Интер's per-type-kept published link) + 2 family (Кмет's, now held for want of registry evidence,
+  // and Кметица's relative-confirmed one) + Канонов's canonicalized single link +
   // Алфа & Бета (two officials on one winner, ПАРТНЬОРИ 5); Мария (quarantined), Акционер (securities),
   // Двусмислен (unknown holder) & Безинст (empty institution) none.
   assert.equal(db.prepare('SELECT COUNT(*) n FROM interest_links').get().n, 20);
@@ -1211,11 +1199,14 @@ test('a verdict from an OLDER rules version is held, never published', () => {
   cache.exec(`UPDATE verdicts SET rules_version = 'tr-rules-0'`);
   cache.close();
 
-  assert.throws(
-    () => runLoad({ TR_CACHE_DB: staleDb, TR_RAW_DIR: staleRaw }),
-    /REFUSE TO LOAD[\s\S]*current registry verdict/,
-    'not one claim may ride a ladder version this code no longer speaks — and the run says so loudly',
+  runLoad({ TR_CACHE_DB: staleDb, TR_RAW_DIR: staleRaw });
+  const checked = open();
+  assert.equal(
+    checked.prepare("SELECT COUNT(*) n FROM interest_links WHERE status='published'").get().n,
+    0,
+    'old evidence never publishes, regardless of corpus coverage',
   );
+  checked.close();
   runLoad(); // restore the full built state for any later reader
 });
 
@@ -1231,7 +1222,7 @@ test('a MOSTLY complete cache still publishes — an incremental crawl has to be
   runLoad(); // restore the full built state for any later reader
 });
 
-test('a substantially incomplete cache refuses EVEN WITH a prior published surface', () => {
+test('missing registry verdicts do not impose a numerical build floor', () => {
   // The floor used to switch off entirely the moment anything had ever been published — so one
   // leftover row from a partial ship, or from the direct UPDATE the suppression runbook sanctions,
   // disabled it. Monotonicity would then dutifully protect that single row while a decimated surface
@@ -1245,41 +1236,18 @@ test('a substantially incomplete cache refuses EVEN WITH a prior published surfa
     .get().n;
   db.close();
   assert.ok(prior > 0, 'there must be a prior surface for this to prove anything');
-  assert.throws(
-    () => runLoad({ TR_CACHE_DB: partialDb, TR_RAW_DIR: partialRaw }),
-    /REFUSE TO LOAD[\s\S]*current registry verdict/,
+  assert.doesNotThrow(() => runLoad({ TR_CACHE_DB: partialDb, TR_RAW_DIR: partialRaw }));
+  const checked = open();
+  assert.equal(
+    checked
+      .prepare(
+        "SELECT count(*) n FROM interest_links WHERE status='published' AND eik IN ('444444447','777777773','666666665')",
+      )
+      .get().n,
+    0,
   );
+  checked.close();
   runLoad(); // restore the full built state for any later reader
-});
-
-test('--allow-partial-tr is the deliberate, stated override', () => {
-  // Without an override a single permanently unreachable ЕИК would deadlock the pipeline forever.
-  const partialDb = path.join(dir, 'partial-ok.sqlite');
-  const partialRaw = path.join(dir, 'partial-ok-deeds');
-  buildTrCache(partialDb, partialRaw, {}, { omit: ['121212129'] });
-  assert.doesNotThrow(() =>
-    execFileSync(
-      'node',
-      [
-        '--import',
-        path.join(HERE, 'register-ts.mjs'),
-        path.join(HERE, 'load.mjs'),
-        '--allow-partial-tr',
-      ],
-      {
-        cwd: ROOT,
-        env: {
-          ...process.env,
-          CACBG_DB: DB,
-          CACBG_STAGING: STAGING,
-          TR_CACHE_DB: partialDb,
-          TR_RAW_DIR: partialRaw,
-        },
-        stdio: 'pipe',
-      },
-    ),
-  );
-  runLoad(); // restore the full-cache state for any later reader
 });
 
 test('the candidate ЕИК list is written for the crawler, covering held links too', () => {
@@ -1333,26 +1301,25 @@ test('every link carries an evidence seal, and no seal carries a name', () => {
   db.close();
 });
 
-test('a family stake publishes ONLY when the official confirmed the company themselves', () => {
-  // The positive control for the narrowest published path. A family link can never earn „Документ" —
-  // the registered owner is the relative, whose name we never hold — so it stands or falls on the seat
-  // or ЕИК the OFFICIAL declared. Without this case „family published: 0" would be indistinguishable
-  // from a structurally dead path (ADR-0027).
+test('a family stake publishes when the register shows the relative its declaration names', () => {
+  // The positive control for the narrowest published path. Without this case „family published: 0" would
+  // be indistinguishable from a structurally dead path (ADR-0027).
   runLoad();
   const db = open();
-  const withSeat = db
+  const named = db
     .prepare(
       "SELECT il.status, il.publish_tier FROM interest_links il JOIN persons p ON p.id=il.person_id WHERE il.eik='191919199' AND p.name='Кметица Иванова Втора'",
     )
     .get();
-  assert.equal(withSeat.status, 'published');
-  assert.equal(withSeat.publish_tier, 'confirmed');
+  assert.equal(named.status, 'published');
+  assert.equal(named.publish_tier, 'confirmed');
   const seal = db
     .prepare(
-      "SELECT matched_fact FROM interest_link_evidence WHERE link_key LIKE '%191919199|family'",
+      "SELECT matched_fact, registry_role FROM interest_link_evidence WHERE link_key LIKE '%191919199|family'",
     )
     .get();
-  assert.equal(seal.matched_fact, 'seat:РУСЕ');
+  assert.equal(seal.matched_fact, 'relative:owner:00190');
+  assert.equal(seal.registry_role, null);
   db.close();
 });
 
@@ -1375,6 +1342,12 @@ test('the published surface is exported BEFORE the wipe, so the audit can gate m
   fs.copyFileSync(DB, firstDb);
   const fdb = new DatabaseSync(firstDb);
   for (const t of [
+    'interest_link_observations',
+    'declaration_identity_evidence',
+    'interest_link_history',
+    'declaration_companies',
+    'person_registry_links',
+    'declaration_metadata',
     'interest_link_evidence',
     'interest_link_authorities',
     'interest_links',
@@ -1614,4 +1587,519 @@ test('corrections are fail-closed on a missing salt, exactly like suppressions',
     () => runLoad({ CACBG_CORRECTIONS_LIST: corrFile, SUPPRESSION_SALT: '' }),
     (err) => /SUPPRESSION_SALT is unset/.test(String(err.stderr ?? '') + String(err.message ?? '')),
   );
+});
+
+test('disposal and pre-appointment facts create historical links without inventing holding years', () => {
+  const file = path.join(STAGING, 'holdings.jsonl');
+  const original = fs.readFileSync(file, 'utf8');
+  const base = JSON.parse(original.trim().split('\n')[0]);
+  try {
+    const rows = ['disposed', 'prior', 'unknown'].map((timing, i) => ({
+      ...base,
+      person: `Исторически Тестов ${i === 0 ? 'Прехвърлител' : 'Предходов'}`,
+      xmlFile: `history-${i}.xml`,
+      controlHash: `history-${i}`,
+      timing,
+    }));
+    fs.writeFileSync(file, original + rows.map((r) => JSON.stringify(r) + '\n').join(''));
+    const isolatedCache = path.join(dir, 'historical-cache.sqlite');
+    fs.copyFileSync(TR_DB, isolatedCache);
+    seedVerdicts({
+      workDb: DB,
+      staging: STAGING,
+      trDb: isolatedCache,
+      registryFor: (eik) =>
+        eik === '111111119'
+          ? { registry: fixtureRegistry(eik, { owners: rows.map((r) => r.person) }) }
+          : null,
+    });
+    runLoad({ TR_CACHE_DB: isolatedCache });
+    const db = open();
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM interest_links WHERE person_id LIKE 'person:ИСТОРИЧЕСКИ ТЕСТОВ %'",
+        )
+        .get().n,
+      2,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM declared_interests WHERE timing IN ('disposed','prior','unknown') AND declaration_id LIKE '%history-%'",
+        )
+        .get().n,
+      3,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM declaration_companies WHERE declaration_id LIKE '%history-%'",
+        )
+        .get().n,
+      3,
+      'historical source documents retain their resolved company even without a current link',
+    );
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM interest_links WHERE person_id LIKE 'person:ИСТОРИЧЕСКИ ТЕСТОВ %' AND (first_declared_year IS NOT NULL OR last_declared_year IS NOT NULL)",
+        )
+        .get().n,
+      0,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM interest_link_observations WHERE declaration_id LIKE '%history-%' AND timing IN ('prior','disposed')",
+        )
+        .get().n,
+      2,
+    );
+    db.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('a conflicting stated EIK creates neither a link nor a company-source association', () => {
+  const file = path.join(STAGING, 'holdings.jsonl');
+  const original = fs.readFileSync(file, 'utf8');
+  const base = JSON.parse(original.trim().split('\n')[0]);
+  try {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        ...base,
+        person: 'Проверка Противоречив Идентификатор',
+        xmlFile: 'conflicting-eik.xml',
+        controlHash: 'conflicting-eik',
+        entity: 'ДИСТИНКТ ТЕХ 7 ЕООД, ЕИК 222222229',
+      }) + '\n',
+    );
+    runLoad();
+    const db = open();
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM declared_interests WHERE declaration_id LIKE '%conflicting-eik.xml'",
+        )
+        .get().n,
+      1,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM declaration_companies WHERE declaration_id LIKE '%conflicting-eik.xml'",
+        )
+        .get().n,
+      0,
+    );
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM interest_links WHERE person_id LIKE 'person:ПРОВЕРКА ПРОТИВОРЕЧИВ ИДЕНТИФИКАТОР|%'",
+        )
+        .get().n,
+      0,
+    );
+    db.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('a later partial change does not erase a family holding absent from its rows', () => {
+  runLoad();
+  const db = open();
+  const link = db
+    .prepare(
+      "SELECT il.link_key, p.name, d.institution FROM interest_links il JOIN persons p ON p.id=il.person_id JOIN declarations d ON d.person_id=p.id WHERE il.status='published' AND il.relation='related' LIMIT 1",
+    )
+    .get();
+  db.close();
+  assert.ok(link);
+  const file = path.join(STAGING, 'filings.jsonl');
+  const original = fs.readFileSync(file, 'utf8');
+  try {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        folder: '2030',
+        xmlFile: 'partial.xml',
+        sourceHash: 'a'.repeat(64),
+        year: '2030',
+        template: 'assets',
+        declarationType: 'Change',
+        person: link.name,
+        institution: link.institution,
+      }) + '\n',
+    );
+    runLoad();
+    const after = open();
+    assert.equal(
+      after.prepare('SELECT status FROM interest_links WHERE link_key=?').get(link.link_key).status,
+      'published',
+    );
+    after.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('a comparable later omission preserves a proven family link as history without extending its years', () => {
+  runLoad();
+  const db = open();
+  const link = db
+    .prepare(
+      `SELECT il.*, p.name, d.institution FROM interest_links il
+    JOIN persons p ON p.id=il.person_id JOIN declarations d ON d.person_id=p.id
+    WHERE il.status='published' AND il.relation='related' LIMIT 1`,
+    )
+    .get();
+  db.close();
+  assert.ok(link);
+  const file = path.join(STAGING, 'filings.jsonl');
+  const original = fs.readFileSync(file, 'utf8');
+  try {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        folder: '2030',
+        xmlFile: 'later-empty.xml',
+        sourceHash: 'b'.repeat(64),
+        year: '2030',
+        template: 'assets',
+        declarationType: 'Annualy',
+        assetInventoryComparable: true,
+        person: link.name,
+        institution: link.institution,
+      }) + '\n',
+    );
+    runLoad();
+    const after = open();
+    const historical = after
+      .prepare('SELECT * FROM interest_links WHERE link_key=?')
+      .get(link.link_key);
+    assert.equal(historical.status, 'published');
+    assert.equal(historical.last_declared_year, link.last_declared_year);
+    assert.equal(
+      after
+        .prepare('SELECT later_declaration_year FROM interest_link_history WHERE link_key=?')
+        .get(link.link_key).later_declaration_year,
+      '2030',
+    );
+    assert.equal(
+      after
+        .prepare('SELECT live_status FROM interest_link_evidence WHERE link_key=?')
+        .get(link.link_key).live_status,
+      'terminated',
+    );
+    after.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('a later document without a visible comparable inventory cannot erase a family holding', () => {
+  runLoad();
+  const db = open();
+  const link = db
+    .prepare(
+      "SELECT il.link_key, p.name, d.institution FROM interest_links il JOIN persons p ON p.id=il.person_id JOIN declarations d ON d.person_id=p.id WHERE il.status='published' AND il.relation='related' LIMIT 1",
+    )
+    .get();
+  db.close();
+  assert.ok(link);
+  const file = path.join(STAGING, 'filings.jsonl');
+  const original = fs.readFileSync(file, 'utf8');
+  try {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        folder: '2030',
+        xmlFile: 'partial.xml',
+        sourceHash: 'a'.repeat(64),
+        year: '2030',
+        template: 'assets',
+        declarationType: 'Annualy',
+        assetInventoryComparable: false,
+        person: link.name,
+        institution: link.institution,
+      }) + '\n',
+    );
+    runLoad();
+    const after = open();
+    assert.equal(
+      after.prepare('SELECT status FROM interest_links WHERE link_key=?').get(link.link_key).status,
+      'published',
+    );
+    after.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('old staging without disposal semantics is refused before modifying the database', () => {
+  const file = path.join(STAGING, 'manifest.json');
+  const original = fs.readFileSync(file, 'utf8');
+  const db = open();
+  const before = db.prepare('SELECT COUNT(*) n FROM interest_links').get().n;
+  db.close();
+  try {
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 2 }));
+    assert.throws(
+      () => runLoad(),
+      (e) => /Stale declaration staging/.test(String(e.stderr)),
+    );
+    const after = open();
+    assert.equal(after.prepare('SELECT COUNT(*) n FROM interest_links').get().n, before);
+    after.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('a later management declaration cannot extend the published ownership period', () => {
+  runLoad();
+  const db = open();
+  const links = db
+    .prepare(
+      "SELECT il.*,p.name FROM interest_links il JOIN persons p ON p.id=il.person_id WHERE il.status='published' AND il.interest_class='private_ownership'",
+    )
+    .all();
+  db.close();
+  const file = path.join(STAGING, 'holdings.jsonl');
+  const original = fs.readFileSync(file, 'utf8');
+  const rows = original.trim().split('\n').map(JSON.parse);
+  const link = links.find((l) => rows.some((h) => h.person === l.name && h.kind === 'shares'));
+  assert.ok(link);
+  const base = rows.find((h) => h.person === link.name && h.kind === 'shares');
+  try {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        ...base,
+        folder: '2030',
+        year: '2030',
+        xmlFile: 'later-management.xml',
+        kind: 'management',
+        timing: 'current',
+        template: 'interests',
+      }) + '\n',
+    );
+    runLoad();
+    const after = open();
+    assert.equal(
+      after
+        .prepare('SELECT last_declared_year FROM interest_links WHERE link_key=?')
+        .get(link.link_key).last_declared_year,
+      link.last_declared_year,
+    );
+    after.close();
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+});
+
+test('same-year inventory differences retain proven links and preserve both sources without asserting timing', () => {
+  runLoad();
+  const db = open();
+  const link = db
+    .prepare(
+      "SELECT il.*,p.name FROM interest_links il JOIN persons p ON p.id=il.person_id WHERE il.status='published' AND il.relation='related' LIMIT 1",
+    )
+    .get();
+  db.close();
+  assert.ok(link);
+  const holdingsFile = path.join(STAGING, 'holdings.jsonl');
+  const filingsFile = path.join(STAGING, 'filings.jsonl');
+  const holdings = fs.readFileSync(holdingsFile, 'utf8');
+  const filings = fs.readFileSync(filingsFile, 'utf8');
+  const base = holdings
+    .trim()
+    .split('\n')
+    .map(JSON.parse)
+    .find((h) => h.person === link.name && h.holderRelation === 'related');
+  assert.ok(base);
+  try {
+    for (const variant of ['duplicate', 'contradictory', 'not_comparable']) {
+      fs.writeFileSync(holdingsFile, holdings);
+      fs.writeFileSync(filingsFile, filings);
+      const extra = {
+        ...base,
+        xmlFile: 'same-year-correction.xml',
+        sourceHash: 'c'.repeat(64),
+        controlHash: 'correction',
+      };
+      fs.appendFileSync(
+        filingsFile,
+        JSON.stringify({
+          ...extra,
+          declarationType: 'Annualy',
+          assetInventoryComparable: variant !== 'not_comparable',
+        }) + '\n',
+      );
+      if (variant === 'duplicate') fs.appendFileSync(holdingsFile, JSON.stringify(extra) + '\n');
+      runLoad();
+      const after = open();
+      const actual = after
+        .prepare(
+          'SELECT status,contract_count,contract_value_eur FROM interest_links WHERE link_key=?',
+        )
+        .get(link.link_key);
+      assert.equal(actual.status, 'published', variant);
+      const omissions = after
+        .prepare(
+          "SELECT declaration_id,reported_year FROM interest_link_observations WHERE link_key=? AND timing='not_listed'",
+        )
+        .all(link.link_key);
+      assert.equal(omissions.length, variant === 'contradictory' ? 1 : 0);
+      if (omissions.length) {
+        assert.equal(omissions[0].declaration_id, `decl:${extra.folder}:${extra.xmlFile}`);
+        assert.equal(omissions[0].reported_year, String(extra.year));
+      }
+      assert.equal(
+        actual.contract_count,
+        link.contract_count,
+        'additional sources never multiply contracts',
+      );
+      assert.equal(actual.contract_value_eur, link.contract_value_eur);
+      after.close();
+    }
+  } finally {
+    fs.writeFileSync(holdingsFile, holdings);
+    fs.writeFileSync(filingsFile, filings);
+  }
+});
+
+test('retains attributed source declarations even without a proven company connection', () => {
+  const file = path.join(STAGING, 'filings.jsonl');
+  const saved = fs.readFileSync(file, 'utf8');
+  try {
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        folder: '2024',
+        xmlFile: 'source-only.xml',
+        sourceHash: 'd'.repeat(64),
+        year: '2023',
+        template: 'assets',
+        declarationType: 'Annualy',
+        person: 'Източник Иванов Тестов',
+        institution: 'Отделна институция',
+      }) + '\n',
+    );
+    runLoad();
+    const db = open();
+    const row = db
+      .prepare(
+        `SELECT d.person_id,p.name FROM declarations d
+      JOIN persons p ON p.id=d.person_id WHERE d.id='decl:2024:source-only.xml'`,
+      )
+      .get();
+    assert.equal(row?.name, 'Източник Иванов Тестов');
+    assert.equal(
+      db.prepare('SELECT COUNT(*) n FROM interest_links WHERE person_id=?').get(row.person_id).n,
+      0,
+    );
+    assert.ok(
+      db
+        .prepare(
+          "SELECT 1 FROM declaration_metadata WHERE declaration_id='decl:2024:source-only.xml'",
+        )
+        .get(),
+    );
+    db.close();
+  } finally {
+    fs.writeFileSync(file, saved);
+  }
+});
+
+test('a registry-backed rebuild refuses staging that skipped identity evidence before touching the published set', () => {
+  const db = new DatabaseSync(DB);
+  const before = db
+    .prepare("SELECT COUNT(*) n FROM interest_links WHERE status='published'")
+    .get().n;
+  const manifestFile = path.join(STAGING, 'manifest.json');
+  const saved = fs.readFileSync(manifestFile, 'utf8');
+  fs.writeFileSync(manifestFile, JSON.stringify({ ...JSON.parse(saved), identityRules: null }));
+  try {
+    assert.throws(
+      () => runLoad(),
+      (err) => /Registry identity evidence is required/.test(String(err.stderr)),
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) n FROM interest_links WHERE status='published'").get().n,
+      before,
+    );
+  } finally {
+    fs.writeFileSync(manifestFile, saved);
+    db.close();
+  }
+});
+
+test('a changed listing-group artifact is refused before touching published data', () => {
+  const file = path.join(STAGING, 'source-groups.jsonl');
+  const saved = fs.readFileSync(file, 'utf8');
+  const db = new DatabaseSync(DB);
+  const before = db.prepare('SELECT count(*) n FROM interest_links').get().n;
+  try {
+    fs.writeFileSync(file, saved + '{}\n');
+    assert.throws(
+      () => runLoad(),
+      (err) => /Stale declaration staging/.test(String(err.stderr)),
+    );
+    assert.equal(db.prepare('SELECT count(*) n FROM interest_links').get().n, before);
+  } finally {
+    fs.writeFileSync(file, saved);
+    db.close();
+  }
+});
+
+test('a company EIK survives aggregation with name-only declarations in either order', () => {
+  const file = path.join(STAGING, 'holdings.jsonl');
+  const saved = fs.readFileSync(file, 'utf8');
+  const holdings = saved.trim().split('\n').map(JSON.parse);
+  const base = holdings.find((h) => h.entity === 'СИЙ ЕООД');
+  assert.ok(base);
+  const explicit = { ...base, entity: 'СИЙ ЕООД, ЕИК 444444447' };
+  try {
+    for (const pair of [
+      [base, explicit],
+      [explicit, base],
+    ]) {
+      fs.writeFileSync(
+        file,
+        [...holdings.filter((h) => h !== base), ...pair].map(JSON.stringify).join('\n') + '\n',
+      );
+      runLoad({}, ['--emit-candidates']);
+      const candidates = fs
+        .readFileSync(path.join(STAGING, 'candidate-links.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map(JSON.parse);
+      const merged = candidates.filter(
+        (c) => c.eik === '444444447' && c.declarantName === base.person,
+      );
+      assert.equal(merged.length, 1);
+      assert.equal(merged[0].declaredEik, true);
+    }
+  } finally {
+    fs.writeFileSync(file, saved);
+  }
+});
+
+test('modified identity input without a fresh extraction hash is rejected before rebuilding', () => {
+  const file = path.join(STAGING, 'filings.jsonl');
+  const original = fs.readFileSync(file);
+  sealFixtureFilings(STAGING);
+  const before = fs.readFileSync(DB);
+  try {
+    fs.appendFileSync(file, '\n');
+    assert.throws(() => runLoad({}, [], false), /Stale declaration staging/);
+    assert.deepEqual(fs.readFileSync(DB), before);
+  } finally {
+    fs.writeFileSync(file, original);
+  }
 });

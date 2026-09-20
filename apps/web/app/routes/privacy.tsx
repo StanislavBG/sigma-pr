@@ -2,9 +2,9 @@ import { Link } from 'react-router';
 import type { Route } from './+types/privacy';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { PageHeader } from '../components/PageHeader';
-import { publicCache } from '../lib/cache';
-import { contactEmail } from '../lib/contact';
+import { cached } from '../lib/cache';
 import { seoMeta } from '../lib/meta';
+import { CONTACT_EMAIL } from '../lib/contact';
 
 export function meta({ matches }: Route.MetaArgs) {
   return seoMeta({
@@ -15,15 +15,9 @@ export function meta({ matches }: Route.MetaArgs) {
   });
 }
 
-export function headers() {
-  return { 'Cache-Control': publicCache(3600) };
-}
+export const headers = cached(3600);
 
-export function loader({ context }: Route.LoaderArgs) {
-  return { contact: contactEmail(context.cloudflare.env) };
-}
-
-export default function Privacy({ loaderData }: Route.ComponentProps) {
+export default function Privacy() {
   return (
     <>
       <Breadcrumbs items={[{ label: 'Начало', to: '/' }, { label: 'Поверителност' }]} />
@@ -48,7 +42,7 @@ export default function Privacy({ loaderData }: Route.ComponentProps) {
             <div className="row">
               <dt>Контакт</dt>
               <dd>
-                <a href={`mailto:${loaderData.contact}`}>{loaderData.contact}</a>
+                <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
               </dd>
             </div>
           </dl>
@@ -57,14 +51,18 @@ export default function Privacy({ loaderData }: Route.ComponentProps) {
         <section className="section" aria-labelledby="data">
           <h2 id="data">Данни и източници</h2>
           <p>
-            СИГМА показва публично достъпни данни за обществени поръчки, възложители, изпълнители,
-            договори, стойности, дати, CPV кодове, УНП и свързани идентификатори.
+            СИГМА показва данни за обществени поръчки и участниците в тях, вписани роли и участия в
+            дружества, както и декларирани интереси на длъжностни лица. Профилите свързват тези
+            записи с договорите на съответните дружества.
           </p>
           <p>
-            Източниците са Агенцията по обществени поръчки (АОП) и ЦАИС ЕОП чрез отворените данни от
-            storage.eop.bg. Когато данните съдържат лични данни, уведомяването се извършва по реда
-            на чл. 14 от Общия регламент относно защитата на данните (GDPR), защото данните не са
-            получени пряко от субектите.
+            Източниците са Агенцията по обществени поръчки (АОП) / ЦАИС ЕОП, Агенцията по
+            вписванията чрез ТРРЮЛНЦ и публичните регистри на декларации за имущество и интереси.
+            При декларациите е посочен оригиналният документ. Регистърните роли, декларираните
+            интереси и аналитичните съпоставки са различни видове информация; връзката сама по себе
+            си не доказва нарушение. Личните данни се получават от тези източници, а не пряко от
+            субектите; приложим е редът за уведомяване по чл. 14 от GDPR. При установена неточност в
+            изходните данни от ТРРЮЛНЦ уведомяваме Агенцията по вписванията.
           </p>
         </section>
 
@@ -85,15 +83,28 @@ export default function Privacy({ loaderData }: Route.ComponentProps) {
         <section className="section" aria-labelledby="rights">
           <h2 id="rights">Права на субектите на данни</h2>
           <p>
-            Можете да поискате информация, достъп, корекция, ограничаване на обработването и преглед
-            на конкретен запис. Имате право на възражение по чл. 21 от GDPR и право на изтриване по
-            чл. 17 от GDPR, когато са налице законовите основания.
+            Можете да поискате достъп, коригиране на неточни лични данни по чл. 16 от GDPR,
+            ограничаване на обработването по чл. 18 и изтриване по чл. 17, когато са налице
+            законовите основания. Имате право да възразите по чл. 21 срещу обработването на
+            основание обществен или легитимен интерес по причини, свързани с Вашата конкретна
+            ситуация. Възражението се разглежда индивидуално, включително когато данните са точни и
+            вече са публични.
           </p>
           <p>
-            Заявленията се изпращат на{' '}
-            <a href={`mailto:${loaderData.contact}`}>{loaderData.contact}</a>. Посочете конкретния
-            запис, URL или идентификатор (например ЕИК, УНП или номер на договор), за да бъде
-            заявлението разгледано точно.
+            Заявленията се изпращат на <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
+            Посочете конкретния запис, URL или идентификатор (например ЕИК, УНП или номер на
+            договор), за да бъде заявлението разгледано точно.
+          </p>
+          <p>
+            Информация за предприетите действия се предоставя без ненужно забавяне и в срок до един
+            месец от получаване на искането. При необходимост срокът може да бъде удължен с още два
+            месеца по реда на чл. 12, пар. 3 от GDPR, с уведомяване и мотиви в рамките на първия
+            месец. При отказ се посочват причините и възможностите за жалба до Комисията за защита
+            на личните данни и съдебна защита.
+          </p>
+          <p>
+            Редът за сигнали обхваща всички източници и съпоставки в СИГМА. Вижте{' '}
+            <Link to="/conflicts/methodology#contest">поправки и оспорване за всички данни</Link>.
           </p>
         </section>
 

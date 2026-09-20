@@ -5,7 +5,7 @@ import type { Route } from './+types/methodology';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { PageHeader } from '../components/PageHeader';
 import { Callout, Flag } from '../components/ui';
-import { publicCache } from '../lib/cache';
+import { cached } from '../lib/cache';
 import { START_YEAR, coverageEndYear } from '../lib/coverage';
 import { seoMeta } from '../lib/meta';
 
@@ -18,9 +18,7 @@ export function meta({ matches }: Route.MetaArgs) {
   });
 }
 
-export function headers() {
-  return { 'Cache-Control': publicCache(3600) };
-}
+export const headers = cached(3600);
 
 // Pull the live corpus figures so the credibility-critical copy matches reality, not hard-coded numbers.
 export async function loader({ context }: Route.LoaderArgs) {
@@ -208,9 +206,13 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
                 <div className="row">
                   <dt>Непотвърдени стойности</dt>
                   <dd>
-                    {count(t.suspect)} договора с явно недостоверна стойност (напр. анекс ≥100× или
-                    грешка) остават в броя записи, но стойността им се изключва от сумите и се
-                    отбелязва като „стойност с непотвърдена достоверност".
+                    {count(t.suspect)} договора имат стойност, която не издържа проверките ни (напр.
+                    анекс ≥100× или явна грешка) — за тях показваме прогнозната стойност на
+                    процедурата вместо подадената. Отделно маркираме и договори с несъразмерно ниска
+                    спрямо прогнозната стойност. И в двата случая записът остава в броя{' '}
+                    <strong>и в сумите</strong>: изключването на суми би скрило разход, който
+                    наистина е направен. Затова маркировката е на самия договор, а не в
+                    аритметиката.
                   </dd>
                 </div>
               </dl>
@@ -479,7 +481,7 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
                 Кои полета са налични, кои са частични и кои липсват. Частичните се показват само за
                 записите, за които има данни — никога като измислена стойност.
               </p>
-              <div className="table-wrap">
+              <div className="table-wrap tbl-prose">
                 <table className="gap-table">
                   <caption className="sr-only">
                     Наличност на полетата спрямо източника в АОП
@@ -494,9 +496,9 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
                   <tbody>
                     {gaps.map(([field, src, cls, badge, variant]) => (
                       <tr className={cls} key={field}>
-                        <td>{field}</td>
-                        <td>{src}</td>
-                        <td>
+                        <td data-label="Поле">{field}</td>
+                        <td data-label="Източник в АОП">{src}</td>
+                        <td data-label="Готово">
                           {variant === 'none' ? (
                             <Flag>{badge}</Flag>
                           ) : (
@@ -590,13 +592,15 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
             <section className="section" aria-labelledby="contact">
               <h2 id="contact">11. Поправки и обратна връзка</h2>
               <p>
-                Грешките поправяме ръчно при сигнал — двойни записи за институция/компания
-                (изпратете двата ЕИК/линка) или сума, която не отговаря на оригиналния документ
-                (изпратете УНП).
+                Можете да подадете сигнал за всяка неточност в СИГМА — например дублирани записи за
+                институция или дружество, неправилна сума по договор или погрешно съпоставяне на
+                лице. Посочете страницата, съответния запис и какво е неточно през{' '}
+                <Link to="/impressum">контакта в импресума</Link>.
               </p>
               <p>
-                СИГМА <em>не</em> премахва записи по молба на изпълнители или възложители. Всички
-                данни идват от публични източници и остават публични.
+                Общият <Link to="/conflicts/methodology#contest">ред за поправки и оспорване</Link>{' '}
+                обхваща всички източници и съпоставките на СИГМА. За искания, свързани с лични
+                данни, вижте и <Link to="/privacy#rights">правата по защита на личните данни</Link>.
               </p>
             </section>
           </div>
