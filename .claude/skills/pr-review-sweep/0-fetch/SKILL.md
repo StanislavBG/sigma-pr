@@ -8,7 +8,7 @@ description: Step 0 of pr-review-sweep — fetch every unresolved review thread 
 Query GitHub's GraphQL API directly for each PR.
 
 ```graphql
-query($n: Int!) {
+query ($n: Int!) {
   repository(owner: "midt-bg", name: "sigma") {
     pullRequest(number: $n) {
       reviewThreads(first: 100) {
@@ -17,7 +17,15 @@ query($n: Int!) {
           isResolved
           path
           line
-          comments(first: 3) { nodes { author { login } body createdAt } }
+          comments(first: 3) {
+            nodes {
+              author {
+                login
+              }
+              body
+              createdAt
+            }
+          }
         }
       }
     }

@@ -12,7 +12,7 @@ any reply, not optional for policy-override threads.**
 
 **Incident that made this mandatory:** on sigma PR #206, a policy-override thread (empty-
 string EIK display) was replied to with "leaving as-is, test locks in current behavior"
-without re-checking the code first — but the thread had *already been fixed* two commits
+without re-checking the code first — but the thread had _already been fixed_ two commits
 earlier by a different session. The wrong reply had to be corrected with a follow-up
 comment. The cause wasn't a broken tool, it was skipping this step because the thread's
 disposition (policy-override) felt like it obviously needed no verification. It didn't
@@ -44,6 +44,7 @@ templates are for, sized appropriately.
 ## Output
 
 Three lists per PR:
+
 - **already-fixed** (thread id + the commit/line that fixed it) → `:land-and-resolve`
 - **reply-only** (thread id + the evidence/reasoning to cite) → `:land-and-resolve`
 - **survives** (thread id, disposition, type) → `:queue`

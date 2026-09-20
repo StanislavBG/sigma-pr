@@ -58,15 +58,15 @@ aid, not part of the skill's name.
                        land per conventions      loop back to step 4
 ```
 
-| Step | Input | Output | On failure |
-|---|---|---|---|
-| 0. `issue-address:select` | open-issue pool (implicit — repo-wide) | one issue number + justification | n/a (always produces one, or explicitly reports the pool is empty) |
-| 1. `issue-address:confirm-open` | one issue number | GO (+ title/body/repro steps) or NO-GO (+ reason) | **STOP** — do not proceed |
-| 2. `issue-address:claim` | one confirmed-open issue number | self-assignment + claim comment, re-confirmed as landed | **STOP** — report if the claim didn't actually post; don't proceed unclaimed |
-| 3. `issue-address:reproduce` | issue title/body/repro steps | failing test (file:line) + root-cause hypothesis + red-phase output | **STOP** — report "does not reproduce" (valid, not a failure) |
-| 4. `issue-address:fix` | failing test + root-cause hypothesis | diff + the one test now green | loops internally until its one test is green |
-| 5. `issue-address:verify` | diff + green reproduction test | full-suite pass counts + typecheck result | **loop back to step 4** — do not proceed to review on red |
-| 6. `requesting-code-review` | the verified diff | Critical/Important findings addressed | fix findings, do not mark resolved until clean |
+| Step                            | Input                                  | Output                                                              | On failure                                                                   |
+| ------------------------------- | -------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 0. `issue-address:select`       | open-issue pool (implicit — repo-wide) | one issue number + justification                                    | n/a (always produces one, or explicitly reports the pool is empty)           |
+| 1. `issue-address:confirm-open` | one issue number                       | GO (+ title/body/repro steps) or NO-GO (+ reason)                   | **STOP** — do not proceed                                                    |
+| 2. `issue-address:claim`        | one confirmed-open issue number        | self-assignment + claim comment, re-confirmed as landed             | **STOP** — report if the claim didn't actually post; don't proceed unclaimed |
+| 3. `issue-address:reproduce`    | issue title/body/repro steps           | failing test (file:line) + root-cause hypothesis + red-phase output | **STOP** — report "does not reproduce" (valid, not a failure)                |
+| 4. `issue-address:fix`          | failing test + root-cause hypothesis   | diff + the one test now green                                       | loops internally until its one test is green                                 |
+| 5. `issue-address:verify`       | diff + green reproduction test         | full-suite pass counts + typecheck result                           | **loop back to step 4** — do not proceed to review on red                    |
+| 6. `requesting-code-review`     | the verified diff                      | Critical/Important findings addressed                               | fix findings, do not mark resolved until clean                               |
 
 Called either with **no issue number** (enters at step 0) or with **one specific issue
 number already named** (enters at step 1, skipping step 0 entirely).
@@ -75,7 +75,7 @@ number already named** (enters at step 1, skipping step 0 entirely).
 open/unclaimed and actually claiming it are two different moments in time — a gap where a
 second concurrent run (or a human) could pick the same issue between the two. `select`'s
 `reject-claimed` check only catches claims that already exist (an assignee, a "working on
-this" comment); nothing marks the issue claimed *for this run* until `claim` actually
+this" comment); nothing marks the issue claimed _for this run_ until `claim` actually
 posts one. No dedicated GitHub/issue-tracking MCP server is connected in this environment
 — `claim` uses the `gh` CLI directly (self-assign + comment), same as every other GitHub
 interaction in this skill chain.

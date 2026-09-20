@@ -48,9 +48,11 @@ for it, by PR number.
    now?" as a throwaway line and proceed anyway.
 
 3. **If every gate check passes**, request the reviewer:
+
    ```bash
    gh pr edit <number> --repo midt-bg/sigma --add-reviewer <reviewer>
    ```
+
    If `gh pr edit` fails with the known "Projects (classic)" GraphQL deprecation error on this
    repo, fall back to
    `gh api repos/midt-bg/sigma/pulls/<n>/requested_reviewers -f "reviewers[]=<reviewer>"` —

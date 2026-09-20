@@ -7,7 +7,7 @@ description: Step 2 of issue-address — claim a confirmed-open, confirmed-uncla
 
 Runs immediately after `issue-address:confirm-open` returns GO, and before
 `issue-address:reproduce` starts any work. Exists because confirming an issue is
-open/unclaimed and then *starting work on it* are two different moments in time — without
+open/unclaimed and then _starting work on it_ are two different moments in time — without
 an explicit claim in between, a second concurrent run of this same skill (or a human
 contributor) could pick the same issue, and nothing in `issue-address:select`'s
 `reject-claimed` check would have caught it, since that check only looks for assignees and
@@ -23,9 +23,11 @@ gap to work around.
 
 1. **Self-assign**, so the issue shows a claim to anyone else's `select:reject-claimed`
    pass or manual look:
+
    ```bash
    gh issue edit <N> --repo midt-bg/sigma --add-assignee "@me"
    ```
+
    If self-assignment fails (e.g. insufficient repo permissions — a common case for
    external contributors on a repo they don't have write access to), don't halt the
    sequence on that alone; fall back to step 2's comment as the claim signal, and note in
@@ -34,6 +36,7 @@ gap to work around.
 2. **Post a claim comment** — visible even to someone who doesn't check assignees,
    and consistent with the claim-language `select:reject-claimed` already scans for
    ("работя по това", "I'll pick this up"):
+
    ```bash
    gh issue comment <N> --repo midt-bg/sigma --body "Работя по този issue (issue-address skill chain). Ще линкна PR-а тук след fix + verify."
    ```

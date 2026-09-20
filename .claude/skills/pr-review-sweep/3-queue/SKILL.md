@@ -42,7 +42,7 @@ existing PR's branch), and the standard two independent verification passes befo
 
 Neither template authorizes a description edit or a reviewer request — those stay
 `pr-review-sweep:land-and-resolve`'s and `pr-signal`'s jobs respectively, so a PR's
-description reflects the *final* landed state, not a snapshot mid-fix.
+description reflects the _final_ landed state, not a snapshot mid-fix.
 
 ## Output
 

@@ -19,26 +19,28 @@ had the exact fix (`min-width: 0`) the issue was reporting the absence of.
 
 1. **For each candidate whose body cites a specific file, line, function, or CSS
    selector/rule**, read the actual current code at that location:
+
    ```bash
    git show origin/main:<cited-path> | sed -n '<start>,<end>p'
    ```
+
    or grep for the cited selector/function name if line numbers have drifted (files get
    reorganized — issue #180's citation was for `apps/web/app/app.css`, which had since
    been split into `apps/web/app/styles/*.css`; searching by class/function name across
    the styles directory found the real current location).
 
 2. **Check the behavior semantically, not just for the literal string the issue used.** A
-   fix can land in a different code *shape* than the issue's own words. (Found live: `#57`
+   fix can land in a different code _shape_ than the issue's own words. (Found live: `#57`
    asked for a `<link rel="canonical">` tag; a literal grep for `rel="canonical"` found
    nothing, so the naive check would have called it unfixed — but the actual fix was a
    data-driven React Router `meta()` descriptor, `{ tagName: 'link', rel: 'canonical', href
-   }`, which produces the same tag at render time without ever containing that literal
+}`, which produces the same tag at render time without ever containing that literal
    string in source.) Before concluding "not fixed" on a bare grep miss:
    - Search one level broader — the surrounding directory/module, a shared
-     helper/util file, a `meta.ts`/`config.ts`-style indirection layer — for the *behavior*
+     helper/util file, a `meta.ts`/`config.ts`-style indirection layer — for the _behavior_
      the issue describes, not just its exact wording.
    - If the issue names a concrete symptom (a missing tag, a wrong computed value, a
-     missing gate), look for whatever code *produces* that output, however it's
+     missing gate), look for whatever code _produces_ that output, however it's
      structured, before deciding the symptom is still present.
 
 3. **Compare what the issue describes as broken against what the code currently does.**

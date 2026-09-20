@@ -9,14 +9,16 @@ description: Reject candidates already covered by a PR (open, OR closed-but-supe
 
 1. **Search for a PR that might already cover each surviving candidate — open AND
    closed, not just open:**
+
    ```bash
    gh pr list --repo midt-bg/sigma --state all --search "<N> in:body"
    gh api search/issues -f q='repo:midt-bg/sigma is:pr <N>'
    ```
+
    Also skim PR titles for matching subject matter (same file area, same symptom) — a PR
    can fix an issue's bug without a formal `Closes #N` link. Searching only `state:open`
    misses the real case found live: `#194` had two closed (not merged) PRs, `#203`/`#215`,
-   each superseded — but the actual fix landed in a *third*, later PR (`#251`) that neither
+   each superseded — but the actual fix landed in a _third_, later PR (`#251`) that neither
    text-search-by-issue-number pass would find unless the closed ones are read first and
    followed to what replaced them (step 3).
 
@@ -34,12 +36,14 @@ description: Reject candidates already covered by a PR (open, OR closed-but-supe
 3. **For every closed-but-not-merged PR found in step 1, read its closing comment before
    deciding the candidate survives.** A PR closed without merging is not automatically
    "unclaimed again" — read why it closed:
+
    ```bash
    gh pr view <PR#> --repo midt-bg/sigma --json state,mergedAt,closedAt,comments
    ```
+
    - If the closing comment says the work was split/replaced ("затварям... но не защото
      работата е отпаднала", "closing in favor of #N", "superseded by #N", "merged into
-     #N"), **follow the chain to whatever PR(s) it names**, and check *their* merge state
+     #N"), **follow the chain to whatever PR(s) it names**, and check _their_ merge state
      the same way. Keep following until you reach a terminal state (merged = reject as
      already-fixed; still open = reject as already-covered; abandoned with no successor =
      candidate survives).
@@ -56,8 +60,8 @@ description: Reject candidates already covered by a PR (open, OR closed-but-supe
      favor of", "split into #N / #M / #P", "superseded by". (Found live: `#154`'s own
      comment thread explicitly proposed closing it in favor of child issues `#156`/`#158`/
      `#163` — a signal that lives in the issue's comments, not in any PR search at all.)
-   Reject on either signal — don't take work someone else already started or already
-   restructured, even informally.
+     Reject on either signal — don't take work someone else already started or already
+     restructured, even informally.
 
 5. **Search for a duplicate open issue** describing the same underlying bug under a
    different number — `gh issue list --state open --search "<keywords>"`, same

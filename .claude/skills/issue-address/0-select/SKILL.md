@@ -60,12 +60,12 @@ one issue number + full audit trail (ranked list, rejected list, why)
 issue-address:confirm-open  (next skill up the chain, outside this sub-orchestrator)
 ```
 
-| Step | Input | Output | On failure/empty |
-|---|---|---|---|
-| 0. `select:fetch-pool` | none (repo-wide `gh issue list`) | full open-issue pool, verified-complete | n/a — loops its own fetch until verified complete |
-| 1. `select:reject-fixed` | full pool | `already-fixed` list (w/ evidence) + `survives` list | if pool empties out here, report "no candidates, all already fixed" |
-| 2. `select:reject-claimed` | `survives` from step 1 | `already-claimed` list (w/ evidence) + `survives` list | if pool empties out here, report "no candidates, all claimed/PR'd" |
-| 3. `select:rank-impact` | `survives` from step 2 | one issue number + ranked list + justification | if `survives` was already empty, report the empty pool rather than fabricating a pick |
+| Step                       | Input                            | Output                                                 | On failure/empty                                                                      |
+| -------------------------- | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| 0. `select:fetch-pool`     | none (repo-wide `gh issue list`) | full open-issue pool, verified-complete                | n/a — loops its own fetch until verified complete                                     |
+| 1. `select:reject-fixed`   | full pool                        | `already-fixed` list (w/ evidence) + `survives` list   | if pool empties out here, report "no candidates, all already fixed"                   |
+| 2. `select:reject-claimed` | `survives` from step 1           | `already-claimed` list (w/ evidence) + `survives` list | if pool empties out here, report "no candidates, all claimed/PR'd"                    |
+| 3. `select:rank-impact`    | `survives` from step 2           | one issue number + ranked list + justification         | if `survives` was already empty, report the empty pool rather than fabricating a pick |
 
 ## Output
 

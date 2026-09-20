@@ -29,7 +29,7 @@ different handling.
   instead" is unambiguous from the current code being wrong.
 - **Feature** — the reviewer asked for additional behavior, a refactor, or a
   consistency/style improvement that isn't fixing broken behavior. If the current code does
-  what it currently does *on purpose* and the ask is to make it do something more or
+  what it currently does _on purpose_ and the ask is to make it do something more or
   different, it's a feature, not a bug — even when phrased urgently.
 
 When genuinely ambiguous between the two (e.g. "this should also handle nulls" — is null

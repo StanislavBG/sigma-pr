@@ -10,25 +10,29 @@ Called with one issue number `<N>`. Produces a go/no-go verdict before any code 
 ## Steps
 
 1. **Fetch the issue.**
+
    ```bash
    gh issue view <N> --repo midt-bg/sigma --json state,title,body,comments,url
    ```
+
    If `state` is not `OPEN` — **stop, no-go.** Report the actual state (closed/merged
    reference) and why. Do not proceed to reproduce or fix a closed issue.
 
 2. **Search for an existing open PR that already covers it** — check both explicit links
    and subject-matter overlap, since a PR can fix the bug without a formal `Closes #N`:
+
    ```bash
    gh pr list --repo midt-bg/sigma --state open --search "<N> in:body"
    gh api search/issues -f q='repo:midt-bg/sigma is:pr is:open <N>'
    ```
+
    Also skim open PR titles for matching subject matter (same file area, same symptom).
    If found — **stop, no-go.** Report which PR number and why it looks like a match; don't
    duplicate work already in flight.
 
 3. **Search for a duplicate open issue** covering the same underlying bug (different
    number, same root cause) — `gh issue list --repo midt-bg/sigma --state open --search
-   "<keywords>"`. If a duplicate exists and is a better-established report, flag it — the
+"<keywords>"`. If a duplicate exists and is a better-established report, flag it — the
    caller decides which one to actually work.
 
 4. **Verdict.** Return one of:

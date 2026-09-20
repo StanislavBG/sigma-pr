@@ -49,19 +49,23 @@ the larger flow.
    reviewer always does, per PR, fresh each time.
 
 1. **List my open PRs.**
+
    ```bash
    gh pr list --repo midt-bg/sigma --author "@me" --state open \
      --json number,title,url,isDraft,updatedAt,statusCheckRollup,reviewDecision
    ```
+
    Also check `StanislavBG/sigma-pr` if any PRs were opened from that fork and don't show
    under `midt-bg/sigma --author @me` (cross-repo forked PRs still list under the base repo,
    but confirm both per CLAUDE.local.md's fork-remote convention).
 
 2. **Per PR, pull review threads.**
+
    ```bash
    gh pr view <number> --repo midt-bg/sigma --json reviews,comments,reviewRequests
    gh api repos/midt-bg/sigma/pulls/<number>/comments
    ```
+
    Count unresolved review threads using GraphQL `reviewThreads.isResolved` as the ground
    truth — the last-reply/last-push heuristic drifts and different runs disagree; never use it
    for the count (same discipline `pr-review-sweep:fetch` applies, `first: 100` and all). Note
@@ -79,8 +83,8 @@ the larger flow.
 
 4. **Render the rollup** — one row per PR:
 
-   | PR | Title | CI | Review | Unresolved | Blocking on | Next action |
-   |---|---|---|---|---|---|---|
+   | PR  | Title | CI  | Review | Unresolved | Blocking on | Next action |
+   | --- | ----- | --- | ------ | ---------- | ----------- | ----------- |
 
    Lead with any PR that's blocking-on-me (I owe a response/fix) — that's the actionable
    set. Then PRs blocking-on-them (waiting on reviewer/CI) for visibility only.
@@ -100,7 +104,7 @@ reviewer (a "ready for re-review" comment, an @-mention, a re-request), without 
 replies, and resolves, and stops. Only `pr-signal` contacts a reviewer, and only on its own
 gate, described there. This
 gate is stricter than — and overrides — the CI-green-and-threads-resolved heuristic: that
-heuristic decides when a PR is *technically* ready to signal, not whether to actually send the
+heuristic decides when a PR is _technically_ ready to signal, not whether to actually send the
 signal. Reaching
 "technically ready" is never itself the go-ahead. A blanket "yes, signal reviewers when ready"
 does not carry forward to the next PR — get the ask for each PR by number. When reporting a PR

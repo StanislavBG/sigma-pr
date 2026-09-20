@@ -60,13 +60,13 @@ PR number(s)
        thread resolved, or reported stuck (failed/needs_review PRD)
 ```
 
-| Step | Input | Output | On failure/empty |
-|---|---|---|---|
-| 0. `pr-review-sweep:fetch` | one or more PR numbers | every unresolved review thread, verified-complete (paginated) | n/a — loops its own fetch until `totalCount` matches nodes paged |
-| 1. `pr-review-sweep:classify` | unresolved threads | each thread tagged `{disposition, type}` | needs-decision threads are set aside, surfaced to the user, never guessed |
-| 2. `pr-review-sweep:check-fixed` | accept/policy-override threads — **every one, no shortcuts** | `already-fixed` (w/ commit) + `reply-only` (w/ reasoning) + `survives` | never skip this because a thread's disposition "obviously" needs no code check — see the incident documented in that step's own file |
-| 3. `pr-review-sweep:queue` | `survives` only, grouped by (PR, type) | one queued `/develop` PRD id per bundle | if a PRD for that (PR, type) is already queued/in-flight, skip and report its id — never double-queue |
-| 4. `pr-review-sweep:land-and-resolve` | already-fixed / reply-only (immediate) or a PRD reported `completed` by the scheduler | thread replied (SHA or reasoning) + resolved | `failed`/`needs_review`/stuck PRDs are reported, never silently retried |
+| Step                                  | Input                                                                                 | Output                                                                 | On failure/empty                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| 0. `pr-review-sweep:fetch`            | one or more PR numbers                                                                | every unresolved review thread, verified-complete (paginated)          | n/a — loops its own fetch until `totalCount` matches nodes paged                                                                     |
+| 1. `pr-review-sweep:classify`         | unresolved threads                                                                    | each thread tagged `{disposition, type}`                               | needs-decision threads are set aside, surfaced to the user, never guessed                                                            |
+| 2. `pr-review-sweep:check-fixed`      | accept/policy-override threads — **every one, no shortcuts**                          | `already-fixed` (w/ commit) + `reply-only` (w/ reasoning) + `survives` | never skip this because a thread's disposition "obviously" needs no code check — see the incident documented in that step's own file |
+| 3. `pr-review-sweep:queue`            | `survives` only, grouped by (PR, type)                                                | one queued `/develop` PRD id per bundle                                | if a PRD for that (PR, type) is already queued/in-flight, skip and report its id — never double-queue                                |
+| 4. `pr-review-sweep:land-and-resolve` | already-fixed / reply-only (immediate) or a PRD reported `completed` by the scheduler | thread replied (SHA or reasoning) + resolved                           | `failed`/`needs_review`/stuck PRDs are reported, never silently retried                                                              |
 
 ## Why two independent classification axes (step 1)
 

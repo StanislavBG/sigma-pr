@@ -11,6 +11,7 @@ description: Fetch the FULL open-issue pool on sigma with bodies, with verified 
    single fixed `--limit` the way an earlier version of this skill (and, separately,
    `pr-review-sweep`'s original GraphQL query) did; both silently truncated real data on
    this repo before. Converge instead of guessing:
+
    ```bash
    LIMIT=100
    while true; do
@@ -21,6 +22,7 @@ description: Fetch the FULL open-issue pool on sigma with bodies, with verified 
    gh issue list --repo midt-bg/sigma --state open --limit "$LIMIT" \
      --json number,title,body,labels,assignees,comments,createdAt,reactionGroups
    ```
+
    `COUNT == LIMIT` is the tell that you hit the ceiling, not the true end of the list —
    never treat that as "done." Only stop once a fetch returns fewer results than it was
    capped at.

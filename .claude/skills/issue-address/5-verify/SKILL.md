@@ -14,16 +14,20 @@ green. This step's job is the broader safety net.
    in case an intervening change touched it).
 
 2. **Run the project's full relevant test suite** — not a hand-picked subset:
+
    ```bash
    pnpm --filter <affected-package> test
    ```
+
    and if the fix touches more than one workspace package, run each affected package's
    suite. Report the actual pass count (e.g. "419/419 passed"), not just "tests pass."
 
 3. **Run typecheck**:
+
    ```bash
    pnpm --filter <affected-package> typecheck
    ```
+
    A green test suite with a broken typecheck is not done.
 
 4. **If anything besides the target reproduction test is red**, fix it before proceeding —
