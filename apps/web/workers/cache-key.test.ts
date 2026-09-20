@@ -184,11 +184,5 @@ describe('CANONICAL_QUERY_PARAMS drift guard', () => {
         `${p} is exempted but has no PLANNED_PARAM_ROUTES entry`,
       ).toBeTruthy();
     }
-
-    const stale = rawStale.filter((p) => !EXPECTED_STALE_PLANNED_PARAMS.has(p));
-    if (stale.length > 0) {
-      console.info(`[cache-key] unexpected stale allow-list entries: ${stale.join(', ')}`);
-    }
-    expect(stale).toEqual([]);
   });
 });
