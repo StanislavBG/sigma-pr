@@ -11,6 +11,7 @@ export const CANONICAL_QUERY_PARAMS = new Set([
   'center',
   'company', // person profile company filter
   'count',
+  'cpv', // /trends: repeatable CPV group multi-select facet (CWE-349)
   'cpvSort', // /trends: CPV list ordering
   'cur', // /trends: include the current (partial) period — changes the chart, totals and year cards
   'cursor',
