@@ -65,3 +65,19 @@ PRD `810-d1-threads-dashboard-spine`. Тази нишка не е пипана; 
 PRD-и с deliverable върху head клон на PR (а не върху job клона) трябва да произвеждат и артефакт
 върху собствения job клон, иначе commit guard-ът ги паркира в `needs_review`, колкото и зелена да е
 работата.
+
+## Пренастройка на средата и повторна проверка (2026-09-19)
+
+Причина за `worktree_integration_failed`: споделеният клон `/home/bilko/Projects/sigma` беше на
+`chore/gh-review-reply-helper`, а не на `main`. Поправено без загуба на данни:
+
+- `sigma-main-edit` (чист, `3dddfb3a`) — `git switch --detach`, за да освободи `main`; worktree-ът е запазен.
+- Основният клон — `git switch main` (двата chore комита са вече във `fork`), после локален
+  `git merge origin/main` (без rebase, без push). Чуждите `.claude/settings.json` и `<path>` са недокоснати.
+- Job клонът е нулиран върху `main`, за да не носи chore комитите; `813a1f2f` е cherry-pick-нат.
+
+Измерено отново (само четене): и трите клона — 0 конфликта срещу `origin/main`; локален head == `fork/<клон>`
+(`68618575` / `ed0c5061` / `d6e1b91a`); миграцията `0023_contracts_overrun_index.sql` е с еднакъв sha256
+`6519fc60…998e9d`; `coverage-baseline.json` == main на трите; неразрешени нишки 2 / 4 / 5, единствената
+`isOutdated` е на #171 (`coverage-baseline.json`). CI на #170/#171 пада само на `Coverage ratchet` —
+собственост на PRD `808`, не е пипано.
