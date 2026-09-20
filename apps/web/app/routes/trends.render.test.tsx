@@ -148,4 +148,163 @@ describe('/trends page render', () => {
     expect(sortLink?.getAttribute('href')).toContain('step=y');
     expect(sortLink?.getAttribute('href')).not.toContain('g=year');
   });
+
+  it('sorts the cpv lens by typical value or by code, and names an unnamed group by its code', () => {
+    const cheap: CpvGroupStat = { ...cpvGroup, group: '15000', name: null, medianEur: 50 };
+    const stats = { totalGroups: 2, groups: [cheap, cpvGroup] };
+    const rowCodes = () =>
+      Array.from(container.querySelectorAll('.ov-cpv-row')).map((r) => r.textContent ?? '');
+
+    render('/trends?angle=cpv&cpvsort=med', loaderData({ angle: 'cpv', cpvSort: 'med', stats }));
+    // Most-typical-value first: 45233 (median 1000) before 15000 (median 50).
+    expect(rowCodes()[0]).toContain('45233');
+    expect(rowCodes()[1]).toContain('CPV група 15000');
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    render('/trends?angle=cpv&cpvsort=code', loaderData({ angle: 'cpv', cpvSort: 'code', stats }));
+    expect(rowCodes()[0]).toContain('15000');
+  });
+
+  it('marks a selected cpv row, and its link deselects it while an unselected one adds it', () => {
+    const other: CpvGroupStat = { ...cpvGroup, group: '15000', name: 'Храни' };
+    render(
+      '/trends?angle=cross&cpv=45233',
+      loaderData({
+        angle: 'cross',
+        cpvSel: ['45233'],
+        stats: { totalGroups: 2, groups: [cpvGroup, other] },
+      }),
+    );
+    const rows = Array.from(container.querySelectorAll('.ov-cpv-row'));
+    const selected = rows.find((r) => r.textContent?.includes('45233'))!;
+    const unselected = rows.find((r) => r.textContent?.includes('15000'))!;
+    expect(selected.className).toContain('is-active');
+    expect(selected.querySelector('.ov-check')?.textContent).toBe('✓');
+    expect(unselected.className).not.toContain('is-active');
+    expect(unselected.querySelector('.ov-check')?.textContent).toBe('');
+    // Deselecting the only group drops the cpv param entirely; adding one keeps both, sorted.
+    expect(selected.getAttribute('href')).toBe('/trends?angle=cross');
+    expect(unselected.getAttribute('href')).toBe('/trends?angle=cross&cpv=15000&cpv=45233');
+  });
+
+  it('labels the current-period toggle by the chart step and flips it on and off', () => {
+    const toggle = () =>
+      Array.from(container.querySelectorAll('.ovz-seg[aria-label="Текущ период"] a'))[0]!;
+    render('/trends', loaderData({ step: 'm' }));
+    expect(toggle().textContent).toContain('вкл. текущия месец');
+    expect(toggle().getAttribute('href')).toContain('cur=1');
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    render('/trends?step=y&cur=1', loaderData({ step: 'y', cur: true }));
+    expect(toggle().textContent).toContain('вкл. текущата година');
+    expect(toggle().getAttribute('href')).not.toContain('cur=');
+    expect(toggle().getAttribute('aria-current')).toBe('true');
+  });
+
+  it('toggles the year filter from a year card and shows the year chip when one is active', () => {
+    render('/trends?year=2024', loaderData({ year: '2024' }));
+    const card = container.querySelector('.ov-year')!;
+    expect(card.className).toContain('is-active');
+    // The active card links back to the unfiltered list.
+    expect(card.getAttribute('href')).toBe('/trends');
+    expect(container.querySelector('.ov-chip')?.textContent).toContain('2024');
+  });
+
+  it('states the empty scope on the cross lens and names the selected groups in the chart label', () => {
+    render(
+      '/trends?angle=cross&cpv=45233',
+      loaderData({
+        angle: 'cross',
+        cpvSel: ['45233'],
+        trend: { ...baseTrend, points: [baseTrend.points[0]!] },
+      }),
+    );
+    expect(container.querySelector('.ov-cross-chart-empty')?.textContent).toContain(
+      'Няма достатъчно данни',
+    );
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    render('/trends?angle=cross&cpv=45233', loaderData({ angle: 'cross', cpvSel: ['45233'] }));
+    expect(
+      container.querySelector('.combo-chart [aria-label]')?.getAttribute('aria-label') ?? '',
+    ).toContain('45233');
+    expect(container.querySelector('.ov-cross-chart-empty')).toBeNull();
+  });
+
+  it('announces the selection size to assistive tech, singular and plural', () => {
+    render('/trends?cpv=45233', loaderData({ cpvSel: ['45233'] }));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      '1 избрана CPV група',
+    );
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    render('/trends?cpv=45233&cpv=15000', loaderData({ cpvSel: ['15000', '45233'] }));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      '2 избрани CPV групи',
+    );
+  });
+
+  it('labels each card against its group median: high, typical, low, and no label when unknown', () => {
+    const mk = (id: string, valueEur: number, cpvGroup: string | null): OverviewContract => ({
+      ...contract,
+      id,
+      valueEur,
+      cpvGroup,
+    });
+    render(
+      '/trends',
+      loaderData({
+        sort: 'value',
+        contracts: [
+          mk('hi', 25000, '45233'), // ×25 the 1000 median → rounded, no decimal
+          mk('mid', 1000, '45233'),
+          mk('lo', 100, '45233'),
+          mk('nogroup', 100, null),
+          mk('med', 3000, '15000'), // group only known via the on-demand medians
+        ],
+        medians: [{ group: '15000', name: 'Храни', contracts: 4, medianEur: 1000 }],
+      }),
+    );
+    const cards = Array.from(container.querySelectorAll('.ov-card'));
+    const rel = (i: number) => cards[i]!.querySelector('.ov-card-rel')?.textContent ?? null;
+    expect(rel(0)).toBe('×25 типичното');
+    expect(rel(1)).toBe('≈ типичното');
+    expect(rel(2)).toBe('под типичното');
+    expect(rel(3)).toBeNull();
+    expect(rel(4)).toBe('×3 типичното');
+    expect(cards[4]!.querySelector('.ov-card-cohort')?.textContent).toBe('Храни');
+    expect(cards[3]!.querySelector('.ov-card-cpv')).toBeNull();
+    expect(container.textContent).toContain('Договори · по стойност');
+  });
+
+  it('flags a full first page and describes the scope of the list', () => {
+    const many = Array.from({ length: 24 }, (_, i) => ({ ...contract, id: `c${i}` }));
+    render(
+      '/trends?year=2024&cpv=45233',
+      loaderData({ contracts: many, year: '2024', cpvSel: ['45233'] }),
+    );
+    const head = container.textContent ?? '';
+    expect(head).toContain('(показани първите 24)');
+    expect(head).toContain('CPV 45233 · 2024');
+  });
+
+  it('draws outlier dots only for samples at 5x the group median or more', () => {
+    render('/trends?angle=cpv', loaderData({ angle: 'cpv' }));
+    // sampleEur [500, 1000, 2000] vs median 1000: none reach 5000.
+    expect(container.querySelectorAll('.ov-dot.is-outlier').length).toBe(0);
+    expect(container.querySelectorAll('.ov-dot').length).toBe(3);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    const spiky = { ...cpvGroup, sampleEur: [500, 6000] };
+    render(
+      '/trends?angle=cpv',
+      loaderData({ angle: 'cpv', stats: { totalGroups: 1, groups: [spiky] } }),
+    );
+    expect(container.querySelectorAll('.ov-dot.is-outlier').length).toBe(1);
+  });
 });

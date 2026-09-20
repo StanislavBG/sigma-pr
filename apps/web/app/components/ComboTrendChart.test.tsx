@@ -91,4 +91,74 @@ describe('ComboTrendChart', () => {
     });
     expect(comboLinePartial()).toBeNull();
   });
+
+  const HOVER_POINTS: TrendPoint[] = [
+    { period: '2024-01', valueEur: 5, contracts: 1, partial: false },
+    { period: '2024-02', valueEur: 10, contracts: 2, partial: true },
+  ];
+  const hoverBar = (i: number, type: 'mouseover' | 'mouseout' = 'mouseover') =>
+    act(() => {
+      container
+        .querySelectorAll('rect.combo-bar')
+        [i]!.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: document.body }));
+    });
+
+  it('renders nothing when there are fewer than two points to draw a line between', () => {
+    act(() => {
+      root.render(<ComboTrendChart points={HOVER_POINTS.slice(0, 1)} granularity="month" />);
+    });
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('shows a tooltip with the period, value and count when a bar is hovered, and clears on leave', () => {
+    act(() => {
+      root.render(<ComboTrendChart points={HOVER_POINTS} granularity="month" />);
+    });
+    expect(container.querySelector('.combo-tip')).toBeNull();
+    hoverBar(0);
+    const tip = container.querySelector('.combo-tip');
+    expect(tip?.textContent).toContain('договори');
+    // Complete period: no „частично" suffix, and the bar/cursor/dot follow the hover.
+    expect(tip?.textContent).not.toContain('частично');
+    expect(container.querySelectorAll('rect.combo-bar')[0]!.getAttribute('class')).toContain(
+      'is-hover',
+    );
+    expect(container.querySelector('.combo-cursor')).not.toBeNull();
+    expect(container.querySelector('.combo-dot')).not.toBeNull();
+
+    // The still-filling final period is labelled as such.
+    hoverBar(1);
+    expect(container.querySelector('.combo-tip')?.textContent).toContain('частично');
+
+    act(() => {
+      container
+        .querySelector('.combo-chart')!
+        .dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    });
+    expect(container.querySelector('.combo-tip')).toBeNull();
+  });
+
+  it('ignores hover entirely on a non-interactive chart', () => {
+    act(() => {
+      root.render(
+        <ComboTrendChart points={HOVER_POINTS} granularity="month" interactive={false} />,
+      );
+    });
+    hoverBar(0);
+    expect(container.querySelector('.combo-tip')).toBeNull();
+    expect(container.querySelector('.combo-cursor')).toBeNull();
+  });
+
+  it('uses the caller-supplied accessible label on the chart', () => {
+    act(() => {
+      root.render(
+        <ComboTrendChart
+          points={HOVER_POINTS}
+          granularity="month"
+          ariaLabel="Само избрани групи"
+        />,
+      );
+    });
+    expect(container.querySelector('svg')?.getAttribute('aria-label')).toBe('Само избрани групи');
+  });
 });

@@ -181,4 +181,30 @@ describe('/trends loader — median cohort dedupe', () => {
     await call('');
     expect(getCpvGroupMedians).toHaveBeenCalledWith(expect.anything(), ['22222']);
   });
+
+  it('also fetches a baseline for a selected cpv group outside the top-N, so its chip can carry a name', async () => {
+    getCpvGroupStats.mockResolvedValue({ totalGroups: 0, groups: [] });
+    await call('?cpv=33600');
+    expect(getCpvGroupMedians).toHaveBeenCalledWith(expect.anything(), ['33600']);
+  });
+
+  it('does not re-request a selected group the top-N stats already carry', async () => {
+    getCpvGroupStats.mockResolvedValue({
+      totalGroups: 1,
+      groups: [
+        {
+          group: '33600',
+          name: 'known',
+          contracts: 5,
+          medianEur: 100,
+          p10Eur: 10,
+          p90Eur: 200,
+          maxEur: 300,
+          sampleEur: [],
+        },
+      ],
+    });
+    await call('?cpv=33600');
+    expect(getCpvGroupMedians).toHaveBeenCalledWith(expect.anything(), []);
+  });
 });

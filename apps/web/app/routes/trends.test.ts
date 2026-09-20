@@ -2,7 +2,7 @@
 // medianEur === 0 is a real case (a CPV group whose contracts carry zero/missing value), and
 // dividing by it must never surface as a rendered label — see PR #170 review thread on this file.
 import { describe, expect, it } from 'vitest';
-import { relLabel } from './trends';
+import { meta, relLabel } from './trends';
 
 describe('relLabel', () => {
   it('returns null instead of dividing by zero when medianEur === 0 and valueEur > 0', () => {
@@ -25,5 +25,17 @@ describe('relLabel', () => {
 
   it('classifies a ratio near the median as ov-rel-mid', () => {
     expect(relLabel(1000, 1000)).toEqual({ text: '≈ типичното', cls: 'ov-rel-mid' });
+  });
+
+  it('drops the decimal for a multiple of ten or more', () => {
+    expect(relLabel(15400, 1000)).toEqual({ text: '×15 типичното', cls: 'ov-rel-hi' });
+  });
+});
+
+describe('meta', () => {
+  it('sets the page title and a description', () => {
+    const tags = meta({} as never);
+    expect(tags).toContainEqual({ title: 'Договори — обзор — СИГМА' });
+    expect(tags.find((t) => 'name' in t && t.name === 'description')).toBeTruthy();
   });
 });
