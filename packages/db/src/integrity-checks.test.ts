@@ -13,19 +13,32 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   assertIntegrity,
+  checkAmendmentTwins,
   checkCurrentAmountParity,
   checkDateSanity,
   checkEikValidity,
-  checkNonEmptyCorpus,
   checkNoNegativeValues,
+  checkNonEmptyCorpus,
   checkRollupReconciliation,
   checkStagingReconciliation,
+  summarizeIntegrity,
 } from '../../../scripts/integrity-checks.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const schemaPath = resolve(root, 'packages/db/migrations/0000_init.sql');
 const migration1Path = resolve(root, 'packages/db/migrations/0001_flow_pairs_bidder_index.sql');
 const migration2Path = resolve(root, 'packages/db/migrations/0002_current_value_currency.sql');
+// precompute.sql's officials block reads interest_links (0003); build it so precompute doesn't fail.
+const migration3Path = resolve(root, 'packages/db/migrations/0003_related_persons_foundation.sql');
+// …and 0006, joined by the officials block for the Trade Register evidence gate (#279, ADR-0033).
+const migration9Path = resolve(root, 'packages/db/migrations/0009_interest_link_evidence.sql');
+// The officials search rows read person_registry_links (0014), interest_link_observations (0015) and
+// person_sources (0018).
+const personMigrationPaths = [
+  'packages/db/migrations/0014_person_profile.sql',
+  'packages/db/migrations/0015_person_observations.sql',
+  'packages/db/migrations/0018_person_entities.sql',
+].map((p) => resolve(root, p));
 const precomputePath = resolve(root, 'scripts/precompute.sql');
 
 function sqlite(dbPath: string, sql: string): void {
@@ -68,6 +81,9 @@ function freshDb(): string {
   readScript(dbPath, schemaPath);
   readScript(dbPath, migration1Path);
   readScript(dbPath, migration2Path);
+  readScript(dbPath, migration3Path);
+  readScript(dbPath, migration9Path);
+  for (const path of personMigrationPaths) readScript(dbPath, path);
   sqlite(dbPath, CLEAN_FIXTURE);
   return dbPath;
 }
@@ -114,6 +130,7 @@ describe('reconciliation gate — clean corpus', () => {
       'eik-validity',
       'date-sanity',
       'staging-reconciliation',
+      'amendment-twin-dedup',
     ])
       expect(results.find((r) => r.name === nm)?.skipped, `${nm} must not skip`).toBe(false);
   });
@@ -226,6 +243,100 @@ describe('reconciliation gate — injected violations', () => {
     expect(result.detail).toMatch(/EMPTY corpus/);
   });
 
+  // #286/#302: the OCDS→EOP bridge lets an OCDS amendment reach the same contract as its EOP twin, and
+  // the prefer-EOP dedup (a DELETE two scripts earlier) is the SOLE guard, since promotion into
+  // `amendments` is unconditional. This gate is that dedup's post-condition. The suite already pins the
+  // dedup behaviourally; these cases pin the GATE — without them an `ok: n === 0` → `ok: true` edit
+  // leaves every package green while the gate is inert.
+  //
+  // Sources are the real staged partition shapes: `eop:annexes:<day>` spanning 2020-05-08..2026-08-11 on
+  // the live corpus, `ocds:<day>` only 2026 (the OCDS feed is go-forward). The gate matches by source
+  // PREFIX, so the fixtures below use both ends of the real EOP range — a pattern pinned to one year
+  // drops an arm and blows the count. The OCDS side cannot be spread the same way without inventing a
+  // partition that does not exist, so an `ocds:2026%` narrowing stays out of reach of honest fixtures;
+  // it is latent-in-2027, not a present regression.
+  it('amendment-twin-dedup catches an EOP and an OCDS amendment on the same (unp, contract_number)', async () => {
+    const db = track(freshDb());
+    sqlite(
+      db,
+      `INSERT INTO amendments (id, natural_key, contract_number, unp, published_at, document_number, source)
+       VALUES
+         ('am:UNP-1:C-1:E1','am:UNP-1:C-1:E1','C-1','UNP-1','2026-03-05','E1','eop:annexes:2026-03-05'),
+         ('am:UNP-1:C-1:ocds-1','am:UNP-1:C-1:ocds-1','C-1','UNP-1','2026-03-05','ocds-e82gsb-1','ocds:2026-03-05');`,
+    );
+    const result = await checkAmendmentTwins(runner(db));
+    expect(result.ok).toBe(false);
+    expect(result.skipped).toBe(false);
+    // Anchor the COUNT (so `11` cannot satisfy `1`) but keep the prose match to the stable half of the
+    // message, not the whole sentence.
+    expect(result.detail).toMatch(/^1\b/);
+    expect(result.detail).toMatch(/prefer-EOP dedup regressed/);
+  });
+
+  it('amendment-twin-dedup stays green on the shapes a working dedup actually leaves behind', async () => {
+    const db = track(freshDb());
+    sqlite(
+      db,
+      `INSERT INTO amendments (id, natural_key, contract_number, unp, published_at, document_number, source)
+       VALUES
+         -- two EOP annexes on one contract: the normal case, not a twin
+         ('am:UNP-1:C-1:E1','am:UNP-1:C-1:E1','C-1','UNP-1','2022-03-01','E1','eop:annexes:2022-03-01'),
+         ('am:UNP-1:C-1:E2','am:UNP-1:C-1:E2','C-1','UNP-1','2022-06-01','E2','eop:annexes:2022-06-01'),
+         -- a genuinely OCDS-only annex on a DIFFERENT contract: what the dedup deliberately keeps
+         ('am:UNP-2:C-2:ocds-1','am:UNP-2:C-2:ocds-1','C-2','UNP-2','2026-02-03','ocds-e82gsb-1','ocds:2026-02-03'),
+         -- an OCDS row the bridge refused (still keyed by its OCID) next to an EOP annex on the same
+         -- contract number: an honest residual, NOT double counting, because every consumer keys on
+         -- (unp, contract_number) and this row's unp matches no contract
+         ('am:ocds-3:C-1:ocds-2','am:ocds-3:C-1:ocds-2','C-1','ocds-e82gsb-3','2026-04-07','ocds-e82gsb-2','ocds:2026-04-07'),
+         -- NULL contract_number on both sides: cannot roll onto a contract, so it cannot double count
+         ('am:UNP-3::E3','am:UNP-3::E3',NULL,'UNP-3','2026-05-06','E3','eop:annexes:2026-05-06'),
+         ('am:UNP-3::ocds-3','am:UNP-3::ocds-3',NULL,'UNP-3','2026-05-06','ocds-e82gsb-4','ocds:2026-05-06'),
+         -- NULL unp on both sides, same contract number: amendments.unp is nullable and both mappers
+         -- can leave it empty, but such a row joins no contract either, so it must stay green too
+         ('am:C-9:E4','am:C-9:E4','C-9',NULL,'2026-07-02','E4','eop:annexes:2026-07-02'),
+         ('am:C-9:ocds-5','am:C-9:ocds-5','C-9',NULL,'2026-07-02','ocds-e82gsb-5','ocds:2026-07-02');`,
+    );
+    const result = await checkAmendmentTwins(runner(db));
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(result.detail).toMatch(/prefer-EOP dedup intact/);
+  });
+
+  // THREE offending pairs that deliberately share a value along each axis — (U1,C1), (U1,C2), (U2,C1) —
+  // so the grouping key itself is pinned: collapsing it to `unp` alone counts 2, to `contract_number`
+  // alone counts 2, and only the real composite key counts 3. One pair also carries two EOP rows, so
+  // counting rows instead of pairs overshoots. The EOP sources sit at both ends of the real partition
+  // range (2020 and 2026), which is what kills a year-pinned pattern.
+  it('amendment-twin-dedup counts each offending pair once, keyed on BOTH columns', async () => {
+    const db = track(freshDb());
+    sqlite(
+      db,
+      `INSERT INTO amendments (id, natural_key, contract_number, unp, published_at, document_number, source)
+       VALUES
+         ('am:UNP-1:C-1:E1','am:UNP-1:C-1:E1','C-1','UNP-1','2020-05-08','E1','eop:annexes:2020-05-08'),
+         ('am:UNP-1:C-1:E2','am:UNP-1:C-1:E2','C-1','UNP-1','2026-08-11','E2','eop:annexes:2026-08-11'),
+         ('am:UNP-1:C-1:ocds-1','am:UNP-1:C-1:ocds-1','C-1','UNP-1','2026-01-04','ocds-e82gsb-1','ocds:2026-01-04'),
+         -- ...and TWO OCDS rows, which the dedup would drop together: a gate that demanded exactly one
+         -- row per side would walk straight past this pair
+         ('am:UNP-1:C-1:ocds-4','am:UNP-1:C-1:ocds-4','C-1','UNP-1','2026-06-15','ocds-e82gsb-4','ocds:2026-06-15'),
+         ('am:UNP-1:C-2:E3','am:UNP-1:C-2:E3','C-2','UNP-1','2023-09-12','E3','eop:annexes:2023-09-12'),
+         ('am:UNP-1:C-2:ocds-2','am:UNP-1:C-2:ocds-2','C-2','UNP-1','2026-05-20','ocds-e82gsb-2','ocds:2026-05-20'),
+         ('am:UNP-2:C-1:E4','am:UNP-2:C-1:E4','C-1','UNP-2','2026-08-11','E4','eop:annexes:2026-08-11'),
+         ('am:UNP-2:C-1:ocds-3','am:UNP-2:C-1:ocds-3','C-1','UNP-2','2026-08-11','ocds-e82gsb-3','ocds:2026-08-11');`,
+    );
+    const result = await checkAmendmentTwins(runner(db));
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/^3\b/);
+  });
+
+  it('amendment-twin-dedup self-skips when the amendments table is absent (staging-only DB)', async () => {
+    const db = track(freshDb());
+    sqlite(db, 'DROP TABLE amendments;');
+    const result = await checkAmendmentTwins(runner(db));
+    expect(result.skipped).toBe(true);
+    expect(result.ok).toBe(true);
+  });
+
   it('eik-validity catches eik_valid=1 with a non-numeric eik_normalized', async () => {
     const db = track(freshDb());
     sqlite(db, "UPDATE bidders SET eik_normalized = 'AB12' WHERE id = 'eik:131071587';");
@@ -308,5 +419,69 @@ describe('reconciliation gate — injected violations', () => {
     await expect(
       assertIntegrity(runner(db), { label: 'test-corrupt', exit: false }),
     ).rejects.toThrow(/integrity gate failed/);
+  });
+});
+
+// The gate's message is what a Workflow step error and a CLI exit carry. On 2026-09-02 it said only
+// "1 of 8 checks broke" and finding WHICH one meant re-running the whole roster by hand against the
+// served D1. It must name the check and carry its detail — clipped, so no check can turn a step
+// error into a page.
+describe('summarizeIntegrity message', () => {
+  const ok = (name: string) => ({ name, ok: true, skipped: false, detail: 'fine' });
+  const broken = (name: string, detail: string) => ({ name, ok: false, skipped: false, detail });
+
+  it('names every broken check with its detail', () => {
+    const summary = summarizeIntegrity(
+      [
+        ok('non-empty-corpus'),
+        broken(
+          'rollup-reconciliation',
+          'SUM(authority_totals.spent_eur) 1 != authority-attributed 2',
+        ),
+        ok('eik-validity'),
+        broken('no-negative-values', '3 contracts with value_flag=ok have negative amount_eur'),
+      ],
+      'cron refresh',
+    );
+    expect(summary.ok).toBe(false);
+    expect(summary.message).toBe(
+      'integrity gate failed: 2 of 4 checks broke (cron refresh): ' +
+        'rollup-reconciliation — SUM(authority_totals.spent_eur) 1 != authority-attributed 2; ' +
+        'no-negative-values — 3 contracts with value_flag=ok have negative amount_eur.',
+    );
+  });
+
+  it('clips a runaway detail and collapses its whitespace', () => {
+    const detail = 'x'.repeat(1000) + '\n\n   tail';
+    const summary = summarizeIntegrity([broken('date-sanity', detail)], 't');
+    expect(summary.message).toMatch(
+      /^integrity gate failed: 1 of 1 checks broke \(t\): date-sanity — x{399}…\.$/,
+    );
+  });
+
+  it('bounds the whole message: past the budget the remaining checks are counted, not printed', () => {
+    const many = Array.from({ length: 8 }, (_, i) => broken(`check-${i}`, 'x'.repeat(390)));
+    const summary = summarizeIntegrity(many, 't');
+    const message = summary.message!;
+    expect(message.length).toBeLessThan(1400);
+    expect(message).toMatch(/; \+\d+ more\.$/);
+    expect(message).toContain('check-0 — ');
+    expect(message).not.toContain('check-7 — ');
+    const named = (message.match(/check-\d+ — /g) ?? []).length;
+    const counted = Number(/\+(\d+) more\.$/.exec(message)![1]);
+    expect(named + counted).toBe(8);
+  });
+
+  it('is null when nothing broke (warnings and skips are not violations)', () => {
+    const summary = summarizeIntegrity(
+      [
+        ok('a'),
+        { name: 'b', ok: true, skipped: true, detail: 'absent' },
+        { ...ok('c'), warn: true },
+      ],
+      't',
+    );
+    expect(summary.ok).toBe(true);
+    expect(summary.message).toBeNull();
   });
 });

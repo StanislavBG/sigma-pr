@@ -4,12 +4,8 @@ import { money } from '@sigma/shared';
 import type { SearchHit } from '@sigma/api-contract';
 import type { loader as suggestLoader } from '../routes/search.suggest';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
-
-const KIND_LABEL: Record<SearchHit['kind'], string> = {
-  authority: 'институция',
-  company: 'компания',
-  contract: 'договор',
-};
+import { personName } from '../lib/person-name';
+import { kindLabel } from '../lib/search-labels';
 
 // Below this length we don't query — single letters match almost everything and just add noise.
 const MIN_QUERY = 2;
@@ -18,9 +14,6 @@ const DEBOUNCE_MS = 150;
 interface SmartSearchProps {
   variant: 'hero' | 'drawer';
   defaultValue?: string;
-  placeholder?: string;
-  inputLabel?: string;
-  submitLabel?: string;
   // Drawer wants to close itself once a suggestion navigates away.
   onNavigate?: () => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
@@ -33,9 +26,6 @@ interface SmartSearchProps {
 export function SmartSearch({
   variant,
   defaultValue = '',
-  placeholder = 'Институция, компания или договор',
-  inputLabel = 'Търсене',
-  submitLabel = 'Намери',
   onNavigate,
   inputRef: externalInputRef,
 }: SmartSearchProps) {
@@ -170,8 +160,8 @@ export function SmartSearch({
           name="q"
           className="smart-search-input"
           value={query}
-          placeholder={placeholder}
-          aria-label={inputLabel}
+          placeholder="Институция, компания или договор"
+          aria-label="Търсене"
           autoComplete="off"
           role="combobox"
           aria-expanded={showList}
@@ -186,7 +176,7 @@ export function SmartSearch({
           onKeyDown={onKeyDown}
         />
         <button type="submit" className="smart-search-submit">
-          {submitLabel}
+          Намери
         </button>
       </form>
 
@@ -205,7 +195,14 @@ export function SmartSearch({
                 {g.hits.map((hit) => {
                   runningIndex += 1;
                   const i = runningIndex;
-                  const meta = hit.ident || hit.subtitle;
+                  const baseMeta = hit.ident || hit.subtitle;
+                  // A conflict-flagged company gets a compact trailing marker on its meta line.
+                  const meta =
+                    hit.kind === 'company' && hit.hasConflict
+                      ? baseMeta
+                        ? `${baseMeta} · свързани лица`
+                        : 'свързани лица'
+                      : baseMeta;
                   return (
                     <li
                       key={hit.slug + hit.title}
@@ -218,9 +215,13 @@ export function SmartSearch({
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => selectIndex(i)}
                     >
-                      <span className="smart-search-option-kind">{KIND_LABEL[hit.kind]}</span>
+                      <span className="smart-search-option-kind">{kindLabel(hit)}</span>
                       <span className="smart-search-option-body">
-                        <span className="smart-search-option-title">{hit.title}</span>
+                        <span className="smart-search-option-title">
+                          {hit.kind === 'official' || hit.kind === 'person'
+                            ? personName(hit.title)
+                            : hit.title}
+                        </span>
                         {meta && <span className="smart-search-option-meta">{meta}</span>}
                       </span>
                       {hit.amountEur != null && (

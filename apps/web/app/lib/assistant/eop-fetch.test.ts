@@ -50,6 +50,16 @@ describe('fetchEopDay', () => {
     expect(files.every((f) => f.error === 'HTTP 403' && f.rows === undefined)).toBe(true);
   });
 
+  it('never reports a failure with an empty message, which would read as success', async () => {
+    // `new Error('')` is a real shape (an aborted fetch, a thrown non-message error). Its message is
+    // falsy, and a falsy error downstream turns a failed file into „0 реда".
+    const fetchImpl: FetchImpl = async () => {
+      throw new Error('');
+    };
+    const files = await fetchEopDay('2023-05-01', fetchImpl);
+    expect(files.every((f) => f.error === 'fetch error' && f.rows === undefined)).toBe(true);
+  });
+
   it('withholds an oversized response instead of parsing it to the model', async () => {
     const huge = JSON.stringify(Array.from({ length: 5000 }, (_, i) => ({ i })));
     const fetchImpl: FetchImpl = async () => ({ ok: true, status: 200, text: async () => huge });
@@ -75,5 +85,52 @@ describe('fetchEopDay', () => {
     const files = await fetchEopDay('2023-05-01', fetchImpl, 256 * 1024);
     expect(files.every((f) => f.truncated && f.rows === undefined && !!f.error)).toBe(true);
     expect(read).toBe(false); // body was never buffered into Worker memory
+  });
+});
+
+describe('eop-fetch — parse and error branches', () => {
+  it('coalesces a null raw date to an empty string (format rejection)', () => {
+    expect(validateEopDate(null as unknown as string).ok).toBe(false);
+  });
+
+  it('wraps a non-array JSON payload into a single-element rows array', async () => {
+    const fetchImpl: FetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ a: 1 }),
+    });
+    const files = await fetchEopDay('2024-01-15', fetchImpl);
+    expect(files.every((f) => f.rows && f.rows.length === 1)).toBe(true);
+  });
+
+  it('surfaces a thrown fetch as a per-file error, not a throw', async () => {
+    const fetchImpl: FetchImpl = async () => {
+      throw new Error('network boom');
+    };
+    const files = await fetchEopDay('2024-01-15', fetchImpl);
+    expect(files.every((f) => f.error === 'network boom')).toBe(true);
+  });
+
+  it('labels a non-Error thrown value with the generic fetch-error message', async () => {
+    // A thrown string (not an Error instance) exercises the `: 'fetch error'` fallback.
+    const fetchImpl: FetchImpl = async () => {
+      throw 'socket reset';
+    };
+    const files = await fetchEopDay('2024-01-15', fetchImpl);
+    expect(files.every((f) => f.error === 'fetch error')).toBe(true);
+  });
+});
+
+describe('eop-fetch — invalid JSON', () => {
+  it('reports an unparseable body as a per-file error', async () => {
+    const fetchImpl: FetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => 'not json{',
+    });
+    const files = await fetchEopDay('2024-01-15', fetchImpl);
+    expect(files.every((f) => f.error === 'невалиден JSON')).toBe(true);
   });
 });

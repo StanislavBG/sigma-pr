@@ -1,0 +1,207 @@
+// Regression: the E11 divestment horizon must advance on EVERY later declaration OF THE SAME TYPE, not only
+// the ones that resolve to a contract winner. Most declared holdings are ordinary (non-winner) companies; a
+// later declaration listing only non-winner companies still writes a filing record (extract.mjs emits one per
+// declaration), so the per-(person,type) filing horizon advances and the stale winner link is withdrawn — it
+// must not keep asserting a CURRENT stake (a false, libel-adjacent present-tense claim). The horizon is
+// per-declaration-type (#226): a later same-type filing counts; a different-type one does not. load.test.mjs
+// covers winner→winner (Николай) and the cross-type keep (Интер); this covers the winner→NON-winner gap.
+// Run: node --import ./scripts/cacbg/register-ts.mjs --test scripts/cacbg/load-divestment-nonwinner.test.mjs
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { seedVerdicts, fixtureRegistry, sealFixtureFilings } from './tr-fixture.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, '..', '..');
+let dir, DB, STAGING, TR_DB, TR_RAW;
+
+function runLoad() {
+  sealFixtureFilings(STAGING);
+  execFileSync(
+    'node',
+    ['--import', path.join(HERE, 'register-ts.mjs'), path.join(HERE, 'load.mjs')],
+    {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        CACBG_DB: DB,
+        CACBG_STAGING: STAGING,
+        TR_CACHE_DB: TR_DB,
+        TR_RAW_DIR: TR_RAW,
+      },
+      stdio: 'pipe',
+    },
+  );
+}
+
+/**
+ * Minimal Trade Register evidence for this fixture (#279, ADR-0033). Publishing rests on a registry fact,
+ * so a loader test without verdicts would only ever exercise the fail-closed path. Each winner's registry
+ * facts name its own declarant as съдружник — the „Документ" rung.
+ */
+function buildTrCache(owners) {
+  seedVerdicts({
+    workDb: DB,
+    staging: STAGING,
+    trDb: TR_DB,
+    registryFor: (eik) =>
+      eik in owners
+        ? {
+            registry: fixtureRegistry(eik, {
+              owners: [].concat(owners[eik].now ?? owners[eik]),
+              pastOwners: owners[eik].past ?? [],
+              seat: 'София',
+              form: 4,
+              suffix: 'ЕООД',
+            }),
+          }
+        : null,
+  });
+}
+
+const open = () => new DatabaseSync(DB, { readOnly: true });
+
+before(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cacbg-divest-'));
+  TR_DB = path.join(dir, 'tr-cache.sqlite');
+  TR_RAW = path.join(dir, 'tr-deeds');
+  DB = path.join(dir, 'fixture.sqlite');
+  STAGING = path.join(dir, 'staging');
+  fs.mkdirSync(STAGING, { recursive: true });
+
+  const db = new DatabaseSync(DB);
+  db.exec(`
+    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT, ownership_kind TEXT);
+    CREATE TABLE authorities(id TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE tenders(id TEXT PRIMARY KEY, authority_id TEXT);
+    CREATE TABLE contracts(id TEXT PRIMARY KEY, tender_id TEXT, bidder_id TEXT, signed_at TEXT, amount_eur REAL);
+    INSERT INTO authorities VALUES ('auth:1','ВЕДОМСТВО ТЕСТ');
+    INSERT INTO tenders VALUES ('t1','auth:1'),('t2','auth:1');
+    -- Two distinctive single-ЕИК winners (number token + matching seat → published, no ambiguity).
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:100000001','ДИВ ТЕХ 5 ЕООД','100000001',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:200000002','ДРУГ ВИН 6 ЕООД','200000002',1,'София');
+    INSERT INTO contracts VALUES ('c1','t1','eik:100000001','2019-05-01',50000);
+    INSERT INTO contracts VALUES ('c2','t2','eik:200000002','2019-06-01',60000);
+  `);
+
+  const holdings = [
+    // Диан owns winner ДИВ ТЕХ 5 in 2019, then files a 2022 ownership declaration listing ONLY a NON-winner
+    // (НЕПОБЕДИМ, not in bidders → does not resolve). The winner-stake was divested; without the fix the
+    // 2022 filing never advances his horizon, so ДИВ ТЕХ 5 wrongly stays 'published'.
+    {
+      folder: '2020',
+      xmlFile: 'DIAN19.xml',
+      year: '2019',
+      template: 'assets',
+      category: '',
+      institution: 'T',
+      person: 'Диан Иванов Дивестов',
+      position: '',
+      entity: 'ДИВ ТЕХ 5 ЕООД',
+      kind: 'shares',
+      detail: '40%',
+      timing: 'annual',
+      seat: 'София',
+      controlHash: 'D1',
+    },
+    {
+      folder: '2023',
+      xmlFile: 'DIAN22.xml',
+      year: '2022',
+      template: 'assets',
+      category: '',
+      institution: 'T',
+      person: 'Диан Иванов Дивестов',
+      position: '',
+      entity: 'НЕПОБЕДИМ КОМПАНИ ООД',
+      kind: 'shares',
+      detail: '30%',
+      timing: 'annual',
+      seat: '',
+      controlHash: 'D2',
+    },
+    // Control: Верен owns winner ДРУГ ВИН 6 in 2019 and NEVER files again → still current → must stay
+    // 'published'. Proves the broadened horizon withdraws the divested stake WITHOUT over-withdrawing a
+    // stake that simply has no later filing.
+    {
+      folder: '2020',
+      xmlFile: 'VEREN19.xml',
+      year: '2019',
+      template: 'assets',
+      category: '',
+      institution: 'T',
+      person: 'Верен Иванов Държателев',
+      position: '',
+      entity: 'ДРУГ ВИН 6 ЕООД',
+      kind: 'shares',
+      detail: '25%',
+      timing: 'annual',
+      seat: 'София',
+      controlHash: 'V1',
+    },
+  ];
+  fs.writeFileSync(
+    path.join(STAGING, 'holdings.jsonl'),
+    holdings.map((h) => JSON.stringify(h)).join('\n') + '\n',
+  );
+  fs.writeFileSync(path.join(STAGING, 'related.jsonl'), '');
+
+  buildTrCache({
+    // Диан DIVESTED, so the live deed must name somebody else — otherwise §7's reconciliation
+    // correctly overturns his declared termination and the case stops testing what it is for.
+    100000001: { now: 'НОВ ИВАНОВ СОБСТВЕНИК', past: ['ДИАН ИВАНОВ ДИВЕСТОВ'] },
+    200000002: 'ВЕРЕН ИВАНОВ ДЪРЖАТЕЛЕВ',
+  });
+  // filings.jsonl — one record per declaration (as extract.mjs emits it), carrying the declaration type. The
+  // divest horizon is built from this: Диан's 2022 assets declaration (listing only the non-winner) advances
+  // his assets horizon to 2022 → the 2019 ДИВ ТЕХ 5 winner stake is withdrawn. Верен has only a 2019 filing.
+  const filings = holdings.map((h) => ({
+    sourceHash: 'a'.repeat(64),
+    folder: h.folder,
+    xmlFile: h.xmlFile,
+    year: h.year,
+    template: h.template,
+    declarationType: 'Annualy',
+    person: h.person,
+    institution: h.institution,
+  }));
+  fs.writeFileSync(
+    path.join(STAGING, 'filings.jsonl'),
+    filings.map((f) => JSON.stringify(f)).join('\n') + '\n',
+  );
+});
+
+after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+test('a later non-winner filing dates proven history without withdrawing it', () => {
+  runLoad();
+  const db = open();
+  const link = (eik, person) =>
+    db
+      .prepare(
+        'SELECT il.* FROM interest_links il JOIN persons p ON p.id=il.person_id WHERE il.eik=? AND p.name=?',
+      )
+      .get(eik, person);
+
+  const dian = link('100000001', 'Диан Иванов Дивестов');
+  const veren = link('200000002', 'Верен Иванов Държателев');
+
+  // The register shows Диан as a past owner, which establishes the company. A later omission
+  // does not invalidate the earlier ownership observation or extend its period.
+  assert.equal(dian.status, 'published');
+  assert.equal(dian.last_declared_year, '2019');
+  assert.equal(
+    db
+      .prepare('SELECT later_declaration_year FROM interest_link_history WHERE link_key=?')
+      .get(dian.link_key).later_declaration_year,
+    '2022',
+  );
+  // The control stake — no later filing to contradict it — remains current. (Guards against over-withdrawal.)
+  assert.equal(veren.status, 'published');
+  db.close();
+});

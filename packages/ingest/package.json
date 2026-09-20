@@ -9,5 +9,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "devDependencies": {
+    "@sigma/test-support": "workspace:*"
+  },
+  "dependencies": {
+    "fast-xml-parser": "5.10.1"
   }
 }

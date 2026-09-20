@@ -7,11 +7,11 @@ import {
   baseSqlLiteral,
   escapeSqlText,
   mapBaseRecord,
-  toEventDate,
+  toBool,
   toISODate,
   toInt,
-  toPeriodDate,
   toReal,
+  toSignedReal,
 } from './base';
 
 const FIXED_NOW = new Date('2026-06-11T12:00:00Z');
@@ -85,8 +85,8 @@ describe('base EOP mapper', () => {
     expect(toISODate(utcDay(2), FIXED_NOW)).toBe(utcDay(2));
     expect(toISODate(utcDay(30), FIXED_NOW)).toBe(utcDay(30));
     expect(toISODate('2027-01-15', FIXED_NOW)).toBe('2027-01-15');
-    expect(toEventDate('2029-05-14', FIXED_NOW)).toBe('2029-05-14');
-    expect(toPeriodDate('2029-05-14', FIXED_NOW)).toBe('2029-05-14');
+    expect(toISODate('2029-05-14', FIXED_NOW)).toBe('2029-05-14');
+    expect(toISODate('2029-05-14', FIXED_NOW)).toBe('2029-05-14');
     expect(toISODate('9999-01-01', FIXED_NOW)).toBeNull();
   });
 
@@ -106,10 +106,96 @@ describe('base EOP mapper', () => {
       expect(row?.end_date).toBe(`${year}-12-31`);
     }
 
-    expect(toPeriodDate('31.02.2024', FIXED_NOW)).toBeNull();
-    expect(toPeriodDate('9999-01-01', FIXED_NOW)).toBeNull();
-    expect(toPeriodDate('2025-06-01', FIXED_NOW)).toBe('2025-06-01');
+    expect(toISODate('31.02.2024', FIXED_NOW)).toBeNull();
+    expect(toISODate('9999-01-01', FIXED_NOW)).toBeNull();
+    expect(toISODate('2025-06-01', FIXED_NOW)).toBe('2025-06-01');
     expect(baseSqlLiteral('tenders', 'end_date', '2043-12-31')).toBe("'2043-12-31'");
+  });
+
+  // An annex can REDUCE a contract, and ЦАИС ЕОП publishes that as a negative
+  // contractValueDifference. Coercing it with toReal dropped the sign - and with it the whole row's
+  // delta - so every value-reducing annex silently lost its recorded change.
+  it('keeps a value-reducing annex delta negative instead of nulling it', () => {
+    const row = mapBaseRecord(
+      'annexes',
+      {
+        uniqueProcurementNumber: '00224-2025-0005',
+        contractNumber: '212221',
+        publicationDate: '05.03.2026',
+        lastContractValue: '24837,96',
+        currentContractValue: '24492,80',
+        contractValueDifference: '-345,16',
+      },
+      { day: '2026-03-05', fetchedAt: '2026-03-05T00:00:00Z' },
+    );
+
+    expect(row?.value_before).toBe(24837.96);
+    expect(row?.value_after).toBe(24492.8);
+    expect(row?.value_delta).toBe(-345.16);
+    // The literal must stay a bare number, not a quoted string, or the staging INSERT changes type.
+    expect(baseSqlLiteral('annexes', 'value_delta', row?.value_delta)).toBe('-345.16');
+  });
+
+  // #305 Tier-2: base.ts runs the validated основание-text heuristic (amendment-total.ts) for annexes and
+  // persists value_treatment + value_after_restated onto the raw row. A doubled value_after whose text
+  // announces the NEW TOTAL ("…на <total>") is restated to that true total; an untreated annex stays NULL.
+  it('populates value_treatment/value_after_restated for an annex whose text announces a new total', () => {
+    const row = mapBaseRecord(
+      'annexes',
+      {
+        uniqueProcurementNumber: '00224-2025-0009',
+        contractNumber: '990001',
+        publicationDate: '05.03.2026',
+        lastContractValue: '442000',
+        currentContractValue: '981240', // doubled: source put the new TOTAL in the change field
+        contractValueDifference: '539240',
+        contractCurrency: 'BGN',
+        changeReason: 'Общата стойност на договора се променя на 539 240 лв.',
+      },
+      { day: '2026-03-05', fetchedAt: '2026-03-05T00:00:00Z' },
+    );
+
+    expect(row?.value_after).toBe(981240); // raw after left as the source gave it
+    expect(row?.value_treatment).toBe('total_restated');
+    expect(row?.value_after_restated).toBe(539240); // the corrected true total
+    // The restated total must serialise as a bare number for the staging INSERT, not a quoted string.
+    expect(baseSqlLiteral('annexes', 'value_after_restated', row?.value_after_restated)).toBe(
+      '539240',
+    );
+  });
+
+  it('leaves value_treatment/value_after_restated NULL for a >2× annex with no text total (not exact-2×)', () => {
+    // 2.5× (not exact 2×) and no announced total in the text ⇒ no confident signal ⇒ left to the flag.
+    const row = mapBaseRecord(
+      'annexes',
+      {
+        uniqueProcurementNumber: '00224-2025-0010',
+        contractNumber: '990002',
+        publicationDate: '05.03.2026',
+        lastContractValue: '1000000',
+        currentContractValue: '2500000',
+        contractValueDifference: '1500000',
+        contractCurrency: 'BGN',
+      },
+      { day: '2026-03-05', fetchedAt: '2026-03-05T00:00:00Z' },
+    );
+
+    expect(row?.value_treatment).toBeNull();
+    expect(row?.value_after_restated).toBeNull();
+  });
+
+  it('coerces signed reals without loosening the magnitude-only fields', () => {
+    expect(toSignedReal('-345,16')).toBe(-345.16);
+    expect(toSignedReal('-1 234,56')).toBe(-1234.56);
+    expect(toSignedReal('5833333,33')).toBe(5833333.33);
+    expect(toSignedReal('0')).toBe(0);
+    expect(toSignedReal(null)).toBeNull();
+    expect(toSignedReal('')).toBeNull();
+    expect(toSignedReal('--5')).toBeNull();
+    expect(toSignedReal('-abc')).toBeNull();
+    expect(toSignedReal(-(MAX_PLAUSIBLE_VALUE + 1))).toBeNull();
+    // Magnitude fields keep rejecting a minus sign: there a negative means corrupt input.
+    expect(toReal('-345,16')).toBeNull();
   });
 });
 
@@ -168,5 +254,124 @@ describe('offline SQL literal hardening', () => {
     expect(() => assertWellFormedSqlLiteral("'unterminated")).toThrow();
     // An odd-run (unescaped) interior single quote must be rejected.
     expect(() => assertWellFormedSqlLiteral("'a'b'")).toThrow();
+  });
+});
+
+describe('toBool', () => {
+  it('maps affirmative tokens (case/locale-folded) to 1', () => {
+    for (const t of ['да', 'true', '1', 'yes', 'ДА', 'True', '  Yes  ']) expect(toBool(t)).toBe(1);
+  });
+  it('maps negative tokens to 0', () => {
+    for (const t of ['не', 'false', '0', 'no', 'НЕ', 'False']) expect(toBool(t)).toBe(0);
+  });
+  it('returns null for unrecognised, empty, or absent input', () => {
+    expect(toBool('може би')).toBeNull();
+    expect(toBool('2')).toBeNull();
+    expect(toBool('')).toBeNull();
+    expect(toBool('   ')).toBeNull();
+    expect(toBool(null)).toBeNull();
+    expect(toBool(undefined)).toBeNull();
+  });
+});
+
+describe('toISODate — Date.parse fallback branch', () => {
+  it('parses a non-ISO, non-DMY but Date.parseable string via the UTC fallback', () => {
+    // Neither the ISO nor the D.M.Y regex matches, so normalizedDateOnly falls to Date.parse.
+    // GMT-anchored input keeps the result timezone-independent.
+    expect(toISODate('01 Jan 2020 00:00:00 GMT', FIXED_NOW)).toBe('2020-01-01');
+    expect(toISODate('15 Mar 2021 00:00:00 GMT', FIXED_NOW)).toBe('2021-03-15');
+    expect(toISODate('01 Jan 2020 00:00:00 GMT', FIXED_NOW)).toBe('2020-01-01');
+  });
+  it('rejects a string Date.parse cannot read', () => {
+    expect(toISODate('изобщо не е дата', FIXED_NOW)).toBeNull();
+  });
+});
+
+describe('mapBaseRecord — annexes category', () => {
+  const meta = { day: '2026-05-01', fetchedAt: '2026-05-25T00:00:00Z' };
+
+  it('stamps the annexes fixed values and coerces annex fields', () => {
+    const row = mapBaseRecord(
+      'annexes',
+      { contractNumber: 'Д-1', currentContractValue: '1 000,50', isEuFunded: 'да' },
+      meta,
+    );
+    expect(row).not.toBeNull();
+    expect(row?.source).toBe('eop:annexes:2026-05-01');
+    expect(row?.dataset_variant).toBe('eop');
+    expect(row?.dataset_year).toBe(2026);
+    expect(row?.contract_number).toBe('Д-1');
+    expect(row?.value_after).toBe(1000.5); // real, BG decimal comma
+    expect(row?.eu_funded).toBe(1); // bool
+  });
+
+  it('drops an annex whose contract number is blank (keep=false)', () => {
+    expect(mapBaseRecord('annexes', { contractNumber: '   ' }, meta)).toBeNull();
+    expect(mapBaseRecord('annexes', {}, meta)).toBeNull();
+  });
+});
+
+describe('baseSqlLiteral — numeric vs text vs null branches', () => {
+  it('emits numeric-kind columns unquoted', () => {
+    expect(baseSqlLiteral('contracts', 'estimated_value', 12345.6)).toBe('12345.6'); // real
+    expect(baseSqlLiteral('contracts', 'bids_received', 3)).toBe('3'); // int
+    expect(baseSqlLiteral('contracts', 'eu_funded', 1)).toBe('1'); // bool
+    expect(baseSqlLiteral('tenders', 'secured_financing', 0)).toBe('0'); // secured_inverse
+    expect(baseSqlLiteral('tenders', 'variants', 1)).toBe('1'); // variants_enum
+    expect(baseSqlLiteral('contracts', 'dataset_year', 2026)).toBe('2026'); // special int column
+  });
+  it('quotes and escapes text-kind columns', () => {
+    expect(baseSqlLiteral('contracts', 'authority_name', "О'Брайън")).toBe("'О''Брайън'");
+    expect(baseSqlLiteral('contracts', 'unp', 'plain')).toBe("'plain'");
+  });
+  it('emits NULL for null or undefined', () => {
+    expect(baseSqlLiteral('contracts', 'authority_name', null)).toBe('NULL');
+    expect(baseSqlLiteral('contracts', 'authority_name', undefined)).toBe('NULL');
+  });
+});
+
+describe('branch completion — coercion + column-kind fallbacks', () => {
+  const meta = { day: '2026-06-01', fetchedAt: '2026-06-07T00:00:00Z' };
+
+  it('toInt rejects an in-format value that exceeds the safe-integer range', () => {
+    expect(toInt('99999999999999999999')).toBeNull(); // passes \d+ but not safe-integer
+    expect(toInt('007')).toBe(7); // leading zeros still parse
+  });
+
+  it('secured_inverse inverts unsecured-funding and passes null through', () => {
+    const secured = (v: unknown) =>
+      mapBaseRecord('tenders', { hasUnsecuredFunding: v }, meta)?.secured_financing;
+    expect(secured('да')).toBe(0); // unsecured=1 → secured 0
+    expect(secured('не')).toBe(1); // unsecured=0 → secured 1
+    expect(secured(undefined)).toBeNull(); // unknown → null
+  });
+
+  it('variants_enum maps the two allowed tokens and nulls anything else', () => {
+    const variants = (v: unknown) => mapBaseRecord('tenders', { hasVariants: v }, meta)?.variants;
+    expect(variants('Разрешено')).toBe(1);
+    expect(variants('Забранено')).toBe(0);
+    expect(variants('каквото и да е')).toBeNull();
+  });
+
+  it('yearOf nulls the dataset_year when the source day is outside the valid range', () => {
+    expect(
+      mapBaseRecord('contracts', { contractNumber: 'C' }, { ...meta, day: '1985-01-01' })
+        ?.dataset_year,
+    ).toBeNull();
+    expect(
+      mapBaseRecord('contracts', { contractNumber: 'C' }, { ...meta, day: '3026-01-01' })
+        ?.dataset_year,
+    ).toBeNull();
+  });
+
+  it('baseSqlLiteral treats an unknown column as text (kind fallback)', () => {
+    expect(baseSqlLiteral('contracts', 'no_such_column', "a'b")).toBe("'a''b'");
+  });
+});
+
+describe('toISODate — expanded ISO years', () => {
+  it('nulls a signed six-digit year rather than reading part of it', () => {
+    expect(toISODate('+010000-01-01', FIXED_NOW)).toBeNull();
+    expect(toISODate('-000001-01-01', FIXED_NOW)).toBeNull();
   });
 });

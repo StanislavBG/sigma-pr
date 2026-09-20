@@ -59,6 +59,13 @@ jobs:
     needs: detect
     if: needs.detect.outputs.env != ''
     runs-on: ubuntu-latest
+    # Explicit cap instead of the 360-min GitHub default: fail fast on a hung job (stalled network
+    # I/O, wedged wrangler) rather than burn a 6-hour slot. Raised from 10 for the declarations
+    # container (ADR-0045): its image is built here — base image, a full install inside it, a push to
+    # Cloudflare's registry — on top of the schema steps and both Workers, which alone ran in
+    # single-digit minutes. The required-reviewers wait on `production` does NOT count against this;
+    # the timer starts only once the job hits a runner.
+    timeout-minutes: 30
     environment: ${{ needs.detect.outputs.env }}
     concurrency:
       group: deploy-${{ needs.detect.outputs.env }}
@@ -72,16 +79,25 @@ jobs:
       SIGMA_WEB_NAME: ${{ vars.SIGMA_WEB_NAME }}
       SIGMA_ETL_NAME: ${{ vars.SIGMA_ETL_NAME }}
       SIGMA_WORKFLOW_NAME: ${{ vars.SIGMA_WORKFLOW_NAME }}
+      SIGMA_REGISTRY_WORKFLOW_NAME: ${{ vars.SIGMA_REGISTRY_WORKFLOW_NAME }}
+      SIGMA_DECLARATIONS_WORKFLOW_NAME: ${{ vars.SIGMA_DECLARATIONS_WORKFLOW_NAME }}
+      SIGMA_REBUILD_WORKFLOW_NAME: ${{ vars.SIGMA_REBUILD_WORKFLOW_NAME }}
+      SIGMA_DECLARATIONS_BUCKET: ${{ vars.SIGMA_DECLARATIONS_BUCKET }}
+      # The environment the declarations container declares when it ships (assertD1TargetAuthorized).
+      SIGMA_SHIP_ENV: ${{ needs.detect.outputs.env }}
+      # The container's takedown-list keying (ADR-0031), handed to the ETL Worker as secrets below.
+      SUPPRESSION_SALT: ${{ secrets.SUPPRESSION_SALT }}
+      SUPPRESSION_KEY_VERSION: ${{ vars.SUPPRESSION_KEY_VERSION || '1' }}
       SIGMA_D1_NAME: ${{ vars.SIGMA_D1_NAME }}
       SIGMA_CSV_CACHE_NAME: ${{ vars.SIGMA_CSV_CACHE_NAME }}
       SIGMA_REPORTS_NAME: ${{ vars.SIGMA_REPORTS_NAME }}
       SIGMA_VECTORIZE_NAME: ${{ vars.SIGMA_VECTORIZE_NAME }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
@@ -115,6 +131,10 @@ jobs:
           check "$SIGMA_WEB_NAME"       sigma           SIGMA_WEB_NAME
           check "$SIGMA_ETL_NAME"       sigma-etl       SIGMA_ETL_NAME
           check "$SIGMA_WORKFLOW_NAME"  sigma-refresh   SIGMA_WORKFLOW_NAME
+          check "$SIGMA_REGISTRY_WORKFLOW_NAME" sigma-registry SIGMA_REGISTRY_WORKFLOW_NAME
+          check "$SIGMA_DECLARATIONS_WORKFLOW_NAME" sigma-declarations SIGMA_DECLARATIONS_WORKFLOW_NAME
+          check "$SIGMA_REBUILD_WORKFLOW_NAME" sigma-rebuild SIGMA_REBUILD_WORKFLOW_NAME
+          check "$SIGMA_DECLARATIONS_BUCKET" sigma-declarations SIGMA_DECLARATIONS_BUCKET
           check "$SIGMA_D1_NAME"        sigma           SIGMA_D1_NAME
           check "$SIGMA_CSV_CACHE_NAME" sigma-csv-cache SIGMA_CSV_CACHE_NAME
           check "$SIGMA_REPORTS_NAME"   sigma-reports   SIGMA_REPORTS_NAME
@@ -124,6 +144,144 @@ jobs:
       - name: Typecheck
         if: steps.guard.outputs.ok == 'true'
         run: pnpm typecheck
+
+      # Schema before serving: apply the свързани-лица schema to the target env BEFORE the Worker deploys,
+      # so a release that adds those tables never serves against a stale schema. The base schema was
+      # created out-of-band via `d1 execute --file` (import.mjs), leaving wrangler's migration tracking
+      # empty — so `d1 migrations apply` would re-run 0000 and collide. Apply 0003 directly the same way;
+      # 0003 is idempotent (CREATE … IF NOT EXISTS). Render first for the real database_id+name; the guard
+      # above already refused production resource names for non-prod envs.
+      - name: Apply the свързани-лица schema
+        if: steps.guard.outputs.ok == 'true'
+        run: |
+          node scripts/wrangler-render.mjs apps/web/wrangler.jsonc
+          # prod leaves SIGMA_D1_NAME unset and uses the committed 'sigma' default (as wrangler-render does);
+          # a bare "$SIGMA_D1_NAME" would run `d1 execute ""` and fail the prod release. Mirror that default.
+          pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes \
+            --file ../../packages/db/migrations/0003_related_persons_foundation.sql
+          # 0009 attaches the Trade Register evidence seal (#279, ADR-0033). Both migrations are
+          # applied by name here because wrangler's migration ledger is empty on this D1 (the base
+          # schema was created out-of-band), so `d1 migrations apply` would collide on 0000.
+          pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes \
+            --file ../../packages/db/migrations/0009_interest_link_evidence.sql
+          # 0010 owns the publishing-gate enforcement for EVERY database (#279 §2) — fresh and already
+          # deployed alike. It is deliberately NOT declared in 0003: that migration is already applied
+          # everywhere, `CREATE TABLE IF NOT EXISTS` never revisits an existing table, and the ship step
+          # wipes ROWS, not definitions — so an in-place CHECK would exist only on databases built after
+          # the edit, and be absent on exactly the database that serves the site. Enforced with BEFORE
+          # INSERT/UPDATE triggers, NOT a table rebuild: the create-copy-drop-rename route would expose
+          # the foreign keys and strip every evidence seal, emptying the public surface until the next
+          # monthly run (see the migration header). `control_hash` stays NULLABLE by design — the register
+          # omits it on some declarations; the natural-key index folds those with COALESCE instead.
+          # Idempotent: every statement is `IF NOT EXISTS` over a converging definition, so re-applying it
+          # on each deploy is a no-op. Verified by three consecutive applications, gate still enforcing.
+          pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes \
+            --file ../../packages/db/migrations/0010_publishing_gate_constraints.sql
+          # 0012: old official ids → the id each became (ADR-0040), read by the official pages; the
+          # related-persons job fills it. 0013: the register layer's tables (ADR-0041), which the ETL
+          # Worker writes. Both CREATE … IF NOT EXISTS, so re-applying them on each deploy is a no-op.
+          pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes \
+            --file ../../packages/db/migrations/0012_person_redirects.sql
+          pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes \
+            --file ../../packages/db/migrations/0013_registry.sql
+
+      - name: Apply the V2 person and registry schema
+        if: steps.guard.outputs.ok == 'true'
+        run: |
+          node scripts/wrangler-render.mjs apps/web/wrangler.jsonc
+          for migration in \
+            0011_company_links \
+            0014_person_profile \
+            0015_person_observations \
+            0016_registry_entry_sync
+          do
+            pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+              --config wrangler.deploy.jsonc --remote --yes \
+              --file "../../packages/db/migrations/${migration}.sql"
+          done
+
+          # 0017 mixes idempotent tables/indexes with one ALTER TABLE. Apply the former on every
+          # deploy and add the column only when the remote schema says it is absent.
+          identity_schema="$RUNNER_TEMP/0017_registry_identity_observations.sql"
+          sed '/^ALTER TABLE registry_roles ADD COLUMN uncertain_after TEXT;$/d' \
+            packages/db/migrations/0017_registry_identity_observations.sql > "$identity_schema"
+          pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes --file "$identity_schema"
+
+          schema_json="$(pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM pragma_table_info('registry_roles') WHERE name='uncertain_after') AS uncertain_after,
+              (SELECT COUNT(*) FROM pragma_table_info('registry_entry_state') WHERE name='baseline_status') AS baseline_status,
+              (SELECT COUNT(*) FROM pragma_table_info('registry_entry_state') WHERE name='baseline_through') AS baseline_through,
+              (SELECT COUNT(*) FROM pragma_table_info('registry_entry_state') WHERE name='baseline_started_at') AS baseline_started_at,
+              (SELECT COUNT(*) FROM pragma_table_info('registry_entry_state') WHERE name='baseline_generation') AS baseline_generation,
+              (SELECT COUNT(*) FROM pragma_table_info('registry_entry_state') WHERE name='baseline_run_id') AS baseline_run_id,
+              (SELECT COUNT(*) FROM pragma_table_info('registry_entry_state') WHERE name='baseline_completed_at') AS baseline_completed_at")"
+
+          read_flag() {
+            printf '%s' "$schema_json" | node -e '
+              const fs = require("fs");
+              let payload;
+              try {
+                payload = JSON.parse(fs.readFileSync(0, "utf8"));
+              } catch {
+                process.exit(2);
+              }
+              const result = Array.isArray(payload) ? payload[0] : payload;
+              const row = result && Array.isArray(result.results) ? result.results[0] : null;
+              const key = process.argv[1];
+              if (!row || !Object.hasOwn(row, key)) process.exit(2);
+              const value = Number(row[key]);
+              process.exit(value === 1 ? 0 : value === 0 ? 1 : 2);
+            ' "$1"
+          }
+
+          ensure_column() {
+            table="$1"
+            key="$2"
+            definition="$3"
+            set +e
+            read_flag "$key"
+            status="$?"
+            set -e
+            case "$status" in
+              0) echo "${table}.${key} already exists." ;;
+              1)
+                pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+                  --config wrangler.deploy.jsonc --remote --yes \
+                  --command "ALTER TABLE ${table} ADD COLUMN ${definition}"
+                ;;
+              *) echo "::error::Could not determine whether ${table}.${key} exists."; exit 1 ;;
+            esac
+          }
+
+          ensure_column registry_roles uncertain_after "uncertain_after TEXT"
+
+          # These depend on the identity-observation tables created above.
+          for migration in \
+            0018_person_entities \
+            0019_registry_scoped_birthdates \
+            0020_registry_company_history \
+            0022_person_relatives
+          do
+            pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+              --config wrangler.deploy.jsonc --remote --yes \
+              --file "../../packages/db/migrations/${migration}.sql"
+          done
+
+          ensure_column registry_entry_state baseline_status \
+            "baseline_status TEXT NOT NULL DEFAULT 'unknown' CHECK (baseline_status IN ('unknown','building','ready'))"
+          ensure_column registry_entry_state baseline_through "baseline_through TEXT"
+          ensure_column registry_entry_state baseline_started_at "baseline_started_at TEXT"
+          ensure_column registry_entry_state baseline_generation "baseline_generation TEXT"
+          ensure_column registry_entry_state baseline_run_id "baseline_run_id TEXT"
+          ensure_column registry_entry_state baseline_completed_at "baseline_completed_at TEXT"
 
       # The base schema was created out-of-band with `d1 execute --file`, so wrangler's migration
       # ledger is empty and `d1 migrations apply` would collide on 0000. Probe the actual table
@@ -194,6 +352,78 @@ jobs:
               ;;
           esac
 
+      # #305 additive columns (migrations 0006/0007) must exist BEFORE the Worker serves: the contract-page
+      # query reads amendments.value_restated/value_suspect, and promote-amendments/refresh-slice also INSERT
+      # value_treatment — so all three must be present or the read AND the ETL write fail. Same rationale as
+      # the currency step above: the migration ledger is empty, so `d1 migrations apply` would collide on
+      # 0000. Probe the actual table and ALTER only the missing columns (SQLite has no ADD COLUMN IF NOT
+      # EXISTS). These are pure additions with safe defaults (INTEGER NOT NULL DEFAULT 0 / nullable TEXT), so
+      # no backfill or completion marker is needed — an ALTER populates every existing row. Malformed
+      # responses are fatal. This also makes 0006/0007 replay-safe when they were applied out-of-ledger.
+      # #306 folds in here rather than adding a second step of its own (as PR #308's own note asked):
+      # refresh-slice.sql and promote-amendments.sql write contract_number_raw + link_method into served
+      # `amendments`, so the first cron after release would crash on the missing columns. One probe, one
+      # mechanism — a second hand-written step is another chance for the alias bug #310 had to fix.
+      - name: Apply amendment restated/suspect + provenance columns
+        if: steps.guard.outputs.ok == 'true'
+        run: |
+          node scripts/wrangler-render.mjs apps/web/wrangler.jsonc
+          # Each alias below MUST be the column name itself: read_flag looks the row up by the very string
+          # ensure_column is called with. An alias that merely describes the column (has_restated) makes
+          # `Object.hasOwn(row, key)` false for every column, which the probe treats as an unreadable answer
+          # and turns into a hard failure — so the step could never succeed, on any database.
+          schema_json="$(pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+            --config wrangler.deploy.jsonc --remote --yes --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM pragma_table_info('amendments') WHERE name = 'value_restated') AS value_restated,
+              (SELECT COUNT(*) FROM pragma_table_info('amendments') WHERE name = 'value_treatment') AS value_treatment,
+              (SELECT COUNT(*) FROM pragma_table_info('amendments') WHERE name = 'value_suspect') AS value_suspect,
+              (SELECT COUNT(*) FROM pragma_table_info('amendments') WHERE name = 'contract_number_raw') AS contract_number_raw,
+              (SELECT COUNT(*) FROM pragma_table_info('amendments') WHERE name = 'link_method') AS link_method")"
+
+          read_flag() {
+            printf '%s' "$schema_json" | node -e '
+              const fs = require("fs");
+              let payload;
+              try {
+                payload = JSON.parse(fs.readFileSync(0, "utf8"));
+              } catch {
+                process.exit(2);
+              }
+              const result = Array.isArray(payload) ? payload[0] : payload;
+              const row = result && Array.isArray(result.results) ? result.results[0] : null;
+              const key = process.argv[1];
+              if (!row || !Object.hasOwn(row, key)) process.exit(2);
+              process.exit(Number(row[key]) === 1 ? 0 : 1);
+            ' "$1"
+          }
+
+          add_column() {
+            echo "amendments.$1 missing; adding it."
+            pnpm --filter @sigma/web exec wrangler d1 execute "${SIGMA_D1_NAME:-sigma}" \
+              --config wrangler.deploy.jsonc --remote --yes \
+              --command "ALTER TABLE amendments ADD COLUMN $2"
+          }
+
+          ensure_column() {
+            set +e
+            read_flag "$1"
+            status="$?"
+            set -e
+            case "$status" in
+              0) echo "amendments.$1 already exists." ;;
+              1) add_column "$1" "$2" ;;
+              *) echo "::error::Could not determine whether amendments.$1 exists."; exit 1 ;;
+            esac
+          }
+
+          ensure_column value_restated  "value_restated INTEGER NOT NULL DEFAULT 0"
+          ensure_column value_treatment "value_treatment TEXT"
+          ensure_column value_suspect   "value_suspect INTEGER NOT NULL DEFAULT 0"
+          # #306 provenance: NULL on both = the row linked by contract_number directly (or is unlinked).
+          ensure_column contract_number_raw "contract_number_raw TEXT"
+          ensure_column link_method         "link_method TEXT"
+
       # `run deploy`, not `deploy` — bare `pnpm deploy` is a pnpm built-in, not our package script.
       - name: Deploy explorer (sigma)
         if: steps.guard.outputs.ok == 'true'
@@ -238,8 +468,24 @@ jobs:
           fi
 
           key="$(openssl rand -hex 32)"
+          # Register the value as a secret with the runner BEFORE it is used anywhere else, so an
+          # accidental echo / set -x trace in a later edit can never leak it. Masking is not
+          # retroactive within a line, hence add-mask on the line right after generation.
+          echo "::add-mask::$key"
           printf '%s' "$key" | pnpm --filter @sigma/web exec wrangler secret put LOG_IP_KEY --name "$SIGMA_WEB_NAME"
 
       - name: Deploy refresh Workflow (sigma-etl)
         if: steps.guard.outputs.ok == 'true'
         run: pnpm --filter @sigma/etl run deploy
+
+      # The declarations container ships to D1 with the same scoped token this job deploys with, and keys
+      # the takedown list with the same salt. `secret put` overwrites, so a rotated value lands on the next
+      # deploy. SIGMA_ETL_NAME is unset in production (the committed default).
+      - name: ETL Worker secrets for the declarations container
+        if: steps.guard.outputs.ok == 'true'
+        run: |
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID SUPPRESSION_SALT SUPPRESSION_KEY_VERSION; do
+            value="${!name}"
+            [ -n "$value" ] || { echo "$name is empty; leaving the Worker secret unchanged."; continue; }
+            printf '%s' "$value" | pnpm --filter @sigma/etl exec wrangler secret put "$name" --config wrangler.deploy.toml
+          done

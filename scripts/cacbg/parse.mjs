@@ -1,0 +1,363 @@
+// Pure parsers for the CACBG register (Сметна палата, декларации по чл.75 ЗСП).
+// Recognized source roots:
+//   • <PublicPerson>      — asset declaration (декларация за имущество). Company SHARES in the
+//                            „Дялове/Прехвърляне на дялове в дружества" tables (col 4 = company).
+//   • <PublicPersonDekl2> — interests declaration (декларация за интереси). Richer: participation,
+//                            MANAGEMENT/control roles, sole-trader activity, and declared related persons.
+//   • <PublicPersonDekl3> — change declaration; unknown timing stays unknown.
+//
+// No I/O — takes XML strings, returns plain records. PII is stripped at this boundary: addresses /
+// passport / phone are never extracted; a non-empty EGN is surfaced as a flag; declared THIRD-PARTY
+// people (related-persons/contract tables) are returned SEPARATELY (relatedPersons) so callers keep
+// them internal-only (§8 — third-party data is not publishable).
+//
+// XXE-safe: fast-xml-parser resolves no DTDs/external entities; we also reject DOCTYPE/ENTITY input.
+
+import { XMLParser } from 'fast-xml-parser';
+import { isXmlFile } from './guard.mjs';
+
+const parser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  parseTagValue: false, // strings only — deterministic, no number coercion
+  trimValues: true,
+});
+
+// Document date, filing date and reporting year are separate facts.
+export function declarationDate(value) {
+  const s =
+    typeof value === 'string'
+      ? value
+          .trim()
+          .replace(/\s*г\.?$/iu, '')
+          .trim()
+      : '';
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);
+  const bg = s.match(/^(\d{1,2})\s*\.\s*(\d{1,2})\s*\.\s*(\d{4})\s*\.?$/);
+  const parts = iso
+    ? [iso[1], iso[2], iso[3]]
+    : bg
+      ? [bg[3], bg[2].padStart(2, '0'), bg[1].padStart(2, '0')]
+      : null;
+  if (!parts) return null;
+  const date = parts.join('-');
+  const parsed = new Date(date);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date
+    ? date
+    : null;
+}
+
+function assertNoDoctype(xml) {
+  if (/<!doctype|<!entity/i.test(xml)) throw new Error('XXE guard: DOCTYPE/ENTITY not allowed');
+}
+const asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
+// Empty XML elements (<Name/>) parse to {} — String({}) would yield '[object Object]', so collapse any
+// object/null/undefined to '' and trim the rest. The single coercion for every scalar field we persist.
+const flat = (v) => (v == null || typeof v === 'object' ? '' : String(v).trim());
+// Attribute the holder independently of the declarant. Exact complete name tokens
+// (including a permutation) support self; initials, subsets and empty cells do not.
+// Two foreign full tokens support a different named holder, without asserting a
+// particular family relationship. Ambiguous cells produce no ownership link.
+const holderTokens = (name) =>
+  String(name ?? '')
+    .normalize('NFC')
+    .toUpperCase()
+    .split(/[^\p{L}]+/u)
+    .filter(Boolean);
+const isInitial = (t) => [...t].length === 1;
+export function classifyHolder(holder, declarant) {
+  if (String(holder ?? '').trim() === '') return 'unknown';
+  const D = holderTokens(declarant);
+  if (D.length === 0) return 'unknown'; // no declarant to compare against
+  const H = holderTokens(holder);
+  if (H.length === 0) return 'unknown'; // non-empty but bears no name letters (e.g. „—")
+  const used = new Array(D.length).fill(false);
+  const unmatched = [];
+  // Match FULL tokens (exact) before INITIALS (first-letter), so an initial can't greedily consume a
+  // declarant token that a full token needs to match.
+  for (const h of [...H].sort((a, b) => Number(isInitial(a)) - Number(isInitial(b)))) {
+    const hit = isInitial(h)
+      ? D.findIndex((d, i) => !used[i] && [...d][0] === [...h][0])
+      : D.findIndex((d, i) => !used[i] && d === h);
+    if (hit >= 0) used[hit] = true;
+    else unmatched.push(h);
+  }
+  if (unmatched.length === 0)
+    return H.length >= 3 && H.length === D.length && H.every((t) => !isInitial(t))
+      ? 'self'
+      : 'unknown';
+  if (unmatched.filter((t) => !isInitial(t)).length >= 2) return 'related';
+  return 'unknown';
+}
+function cellText(cell) {
+  if (cell == null) return '';
+  const t = typeof cell === 'object' ? cell['#text'] : cell;
+  return t == null ? '' : String(t).trim();
+}
+// map a row's cells by @_Num → text
+function cellsByNum(row, definition = row) {
+  const hidden = new Set(
+    asArray(definition?.Cell)
+      .filter((c) => Object.hasOwn(c, '@_Disabled'))
+      .map((c) => c['@_Num']),
+  );
+  const by = {};
+  for (const c of asArray(row?.Cell))
+    if (!Object.hasOwn(c, '@_Disabled') && !hidden.has(c?.['@_Num']))
+      by[c?.['@_Num']] = cellText(c);
+  return by;
+}
+// find the @_Num of the first column whose @_Description matches `re` (labels live on the header row)
+function colNum(firstRow, re, fallback) {
+  const found = colNumOrNull(firstRow, re);
+  return found ?? fallback;
+}
+// The same resolution WITHOUT the fallback, for the one column where "I could not find it" and "I found it
+// and it was blank" must stay distinguishable. `colNum` collapses them: an unresolvable column resolves to
+// a Num that is not in the row, `by[col]` is undefined, and the caller reads an empty cell it never found.
+// For the HOLDER column those two readings differ by who owns the stake (§1.4) — see its call site.
+function colNumOrNull(firstRow, re) {
+  for (const c of asArray(firstRow?.Cell)) {
+    if (
+      !Object.hasOwn(c, '@_Disabled') &&
+      c?.['@_Num'] &&
+      re.test(String(c?.['@_Description'] ?? ''))
+    )
+      return c['@_Num'];
+  }
+  return null;
+}
+const year4 = (s) => String(s ?? '').match(/\b(20\d{2})\b/)?.[1] ?? null;
+
+/**
+ * Parse a year's list.xml into flat person→declaration rows.
+ * list.xml carries NO year (year lives inside each declaration) — do not infer it here.
+ * @returns {{category:string, institution:string, person:string, position:string, xmlFile:string, personLocator:number}[]}
+ */
+export function parseList(xml) {
+  assertNoDoctype(xml);
+  const root = parser.parse(xml)?.root;
+  const out = [];
+  let personLocator = 0;
+  for (const main of asArray(root?.MainCategory)) {
+    for (const cat of asArray(main?.Category)) {
+      const category = flat(cat?.['@_Name']);
+      for (const inst of asArray(cat?.Institution)) {
+        const institution = flat(inst?.['@_Name']);
+        for (const person of asArray(inst?.Person)) {
+          personLocator++;
+          const name = flat(person?.Name);
+          for (const pos of asArray(person?.Position)) {
+            const position = flat(pos?.Name);
+            for (const decl of asArray(pos?.Declaration)) {
+              // A row must NAME A FILE to be announced. The register also emits placeholder rows that
+              // announce no document — `<Sent>False</Sent><xmlFile>U</xmlFile><Title>Уведомление</Title>`
+              // (87 of them across 15 sets). A bare truthiness test accepted 'U' as a filename, so the
+              // crawler counted a declaration that does not exist, then failed to fetch it and booked an
+              // error — permanently pinning the completeness gate for those sets below their announced
+              // count. Require the filename shape and a phantom is never announced in the first place.
+              const xmlFile = flat(decl?.xmlFile);
+              if (isXmlFile(xmlFile))
+                out.push({ category, institution, person: name, position, xmlFile, personLocator });
+            }
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// --- asset declaration (<PublicPerson>): company SHARES ------------------------------------------
+// TWO distinct holdings tables live here and must NOT be conflated:
+//   • „Дялове в дружества с ограничена отговорност" (ООД/ЕООД) — closely-held participation shares.
+//     Company in the „Наименование на дружеството" column (≈col 4). MATERIAL — where a real ownership
+//     conflict lives. kind='shares'.
+//   • „Ценни книги, поименни акции в акционерни дружества" (АД) — registered/listed securities.
+//     Company (issuer) in the „Емитент" column (≈col 6), NOT col 4 (col 4 is „Ценни книжа"). Mostly
+//     blue-chip public float — NOISE for ownership. kind='securities'.
+// Each table carries a holder-name column („Име: собствено, бащино и фамилно") identifying whether the
+// stake is the DECLARANT's own or a CLOSE RELATIVE's. We capture that as holderRelation ∈ self|related
+// — but the relative's NAME is never retained (PII rail, §8). The materiality/legal-form gate is applied
+// downstream (load.mjs closelyHeldForm), keeping this parser faithful to the source table.
+function parseAssets(pp) {
+  const personal = pp.Personal ?? {};
+  const dd = pp.DeclarationData ?? {};
+  const declarant = flat(personal.Name);
+  let egnPresent = String(personal.EGN ?? '').trim().length > 0;
+  const interests = [];
+  let familyHoldingCount = 0;
+  let assetInventoryComparable = false;
+  for (const table of asArray(pp.Tables?.Table)) {
+    if (Object.hasOwn(table, '@_Disabled')) continue;
+    const desc = String(table['@_Description'] ?? '');
+    const isOod = /дялове в дружества|ограничена отговорн/i.test(desc);
+    const isSec = /ценни книги|акционерни дружеств|поименни акции/i.test(desc);
+    if (!isOod && !isSec) continue;
+    const rows = asArray(table.Row);
+    const kind = isOod ? 'shares' : 'securities';
+    // Column resolution is description-first (robust across template renumberings); fallbacks are the
+    // observed column for that table type. Reading the wrong column is the libel risk, so the two table
+    // types resolve independently — a securities table never falls back to the ООД company column.
+    const cCompany = isOod
+      ? colNumOrNull(rows[0], /наименование.*дружеств|фирма/i)
+      : colNumOrNull(rows[0], /емитент/i);
+    const cSeat = colNum(rows[0], /седалище/i, '5');
+    // A missing column and an empty holder are both unknown attribution.
+    // Never infer ownership from the absence of a name.
+    const cHolder = colNumOrNull(rows[0], /собствено.*фамил/i);
+    const cEgn = colNum(rows[0], /^егн$/i, isOod ? '8' : '9');
+    if (cCompany === null) continue;
+    const disposition = /прехвърляне|отчуждаване/i.test(desc);
+    if (isOod && !disposition && cHolder !== null) assetInventoryComparable = true;
+    if (Object.hasOwn(table, '@_Declared') && table['@_Declared'] !== 'True') continue;
+    for (const row of rows) {
+      const by = cellsByNum(row, rows[0]);
+      const company = by[cCompany] ?? '';
+      if (!company) continue;
+      if ((by[cEgn] ?? '').length > 0) egnPresent = true;
+      const holderRelation =
+        cHolder === null ? 'unknown' : classifyHolder(by[cHolder] ?? '', declarant);
+      if (holderRelation === 'related') familyHoldingCount += 1;
+      const seat = isOod ? (by[cSeat] ?? '') : '';
+      interests.push({
+        entity: company,
+        kind,
+        detail: seat,
+        // A disposal table records a transaction, not a positive holding snapshot.
+        timing: disposition ? 'disposed' : 'annual',
+        seat,
+        holderRelation,
+        // The relative's name stays on the family row for the internal related-persons table only; the
+        // holdings export never carries it (ADR-0044).
+        ...(holderRelation === 'related' ? { holder: by[cHolder] } : {}),
+      });
+    }
+  }
+  return {
+    templateType: 'assets',
+    assetInventoryComparable,
+    declarant,
+    position: flat(personal.Position) || null,
+    work: flat(personal.Work) || null,
+    year: year4(dd.Year),
+    declaredOn: declarationDate(dd.DeclarationDate),
+    submittedOn: declarationDate(dd.EntryDate),
+    declarationType: dd.DeclarationType != null ? String(dd.DeclarationType).trim() : null,
+    appointmentNumber: flat(dd.ActNumber) || null,
+    appointmentDate: flat(dd.ActData) || null,
+    controlHash: dd.ControlHash != null ? String(dd.ControlHash).trim() : null,
+    egnPresent,
+    familyHoldingCount,
+    interests,
+    relatedPersons: [],
+  };
+}
+
+// --- interests declaration (<PublicPersonDekl2>): participation / MANAGEMENT / sole-trader / related
+function parseInterests(ppd, root) {
+  const personal = ppd.Personal ?? {};
+  const dd = ppd.DeclarationData ?? {};
+  const declarant = flat(personal.Name);
+  const egnPresent = String(personal.EGN ?? '').trim().length > 0;
+  const interests = [];
+  const relatedPersons = []; // third-party people — INTERNAL only (§8)
+  for (const table of asArray(ppd.Tables?.Table)) {
+    if (Object.hasOwn(table, '@_Disabled')) continue;
+    const desc = String(table['@_Description'] ?? '');
+    const rows = asArray(table.Row);
+    if (Object.hasOwn(table, '@_Declared') && table['@_Declared'] !== 'True') continue;
+    const timing = /дванадесет месеца преди/i.test(desc)
+      ? 'prior'
+      : /към датата на избирането или назначаването|към датата на избирането:/i.test(desc)
+        ? 'current'
+        : 'unknown';
+    let kind = null;
+    if (/участие в следните търговски дружества|имам участие/i.test(desc)) kind = 'participation';
+    else if (/управител или член на орган|управление или контрол/i.test(desc)) kind = 'management';
+    else if (
+      /едноличен търговец|наименование на ет/i.test(desc) ||
+      /наименование на ет/i.test(String(rows[0]?.Cell?.[1]?.['@_Description'] ?? ''))
+    )
+      kind = 'sole_trader';
+    else if (/свързани лица/i.test(desc)) kind = 'related_person';
+    else if (/договори с лица/i.test(desc)) kind = 'related_contract';
+    else continue;
+
+    if (kind === 'related_person' || kind === 'related_contract') {
+      const cName = colNum(rows[0], /трите имена|име.*фамил/i, '2');
+      const cInfo = colNum(rows[0], /област|предмет/i, '3');
+      for (const row of rows) {
+        const by = cellsByNum(row, rows[0]);
+        const name = by[cName] ?? '';
+        if (name) relatedPersons.push({ name, kind, info: by[cInfo] ?? '', timing });
+      }
+      continue;
+    }
+    // company / ЕТ bearing tables: entity name in the „Дружество" / „Наименование на ЕТ" column
+    const cEntity = colNumOrNull(rows[0], /^дружество$|наименование на ет|дружеств/i);
+    if (cEntity === null) continue;
+    const cDetail = colNum(rows[0], /размер|участие|предмет/i, '3');
+    for (const row of rows) {
+      const by = cellsByNum(row, rows[0]);
+      const entity = by[cEntity] ?? '';
+      // Interests-declaration holdings are the declarant's own (family stakes are declared separately, as
+      // related persons) — holderRelation:'self' keeps the staging shape uniform with parseAssets.
+      if (entity)
+        interests.push({
+          entity,
+          kind,
+          detail: by[cDetail] ?? '',
+          timing,
+          seat: '',
+          holderRelation: 'self',
+        });
+    }
+  }
+  return {
+    templateType: 'interests',
+    declarant,
+    position: flat(personal.Position) || null,
+    work: flat(personal.Work) || null,
+    year: year4(dd.DeclarationDate) ?? year4(dd.EntryDate),
+    declaredOn: declarationDate(dd.DeclarationDate),
+    submittedOn: declarationDate(dd.EntryDate),
+    declarationType: root === 'PublicPersonDekl3' ? 'Change' : 'interests',
+    controlHash: dd.ControlHash != null ? String(dd.ControlHash).trim() : null,
+    egnPresent,
+    familyHoldingCount: 0,
+    interests,
+    relatedPersons,
+  };
+}
+
+/**
+ * Parse one declaration XML (either template). Detects the root and dispatches.
+ * @returns unified record — see parseAssets / parseInterests. `interests[]` carry {entity, kind,
+ * detail, timing}; kind ∈ shares|participation|management|sole_trader. `relatedPersons[]` are
+ * third-party (INTERNAL-only). Unknown roots return an empty record (not an error).
+ */
+export function parseDeclaration(xml) {
+  assertNoDoctype(xml);
+  const doc = parser.parse(xml);
+  if (doc?.PublicPerson) return parseAssets(doc.PublicPerson);
+  // Recognised roots have distinct meanings: Dekl2 is interests, Dekl3 is a change.
+  // New versions require explicit review; table numbering alone is not semantics.
+  const dekl = Object.keys(doc ?? {}).find((k) =>
+    ['PublicPersonDekl2', 'PublicPersonDekl3'].includes(k),
+  );
+  if (dekl) return parseInterests(doc[dekl], dekl);
+  return {
+    templateType: 'unknown',
+    declarant: '',
+    position: null,
+    work: null,
+    year: null,
+    declarationType: null,
+    controlHash: null,
+    egnPresent: false,
+    familyHoldingCount: 0,
+    interests: [],
+    relatedPersons: [],
+  };
+}

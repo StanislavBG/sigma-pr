@@ -1,6 +1,9 @@
 // OCDS adapter helpers for the procurement ETL. The pure release flatteners here are the single
 // source of truth used by both the Worker-side ingest package and the CLI loaders.
 
+import { clean, toISODate, validYear } from './base.ts';
+import { addDays } from './fx.ts';
+
 const KIND_CATEGORY: Record<string, string> = {
   goods: 'Доставки',
   services: 'Услуги',
@@ -8,59 +11,8 @@ const KIND_CATEGORY: Record<string, string> = {
 };
 
 const MS_PER_DAY = 86_400_000;
-const MIN_DATA_YEAR = 1990;
-const MIN_DATA_DAY = `${MIN_DATA_YEAR}-01-01`;
 
-function maxDataYear(): number {
-  return new Date().getUTCFullYear() + 1;
-}
-
-function validYear(year: number): boolean {
-  return Number.isInteger(year) && year >= MIN_DATA_YEAR && year <= maxDataYear();
-}
-
-function clean(v: unknown): string | null {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  return s === '' ? null : s;
-}
-
-function validDateOnly(day: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
-  const d = new Date(`${day}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === day;
-}
-
-function normalizedDateOnly(v: unknown): string | null {
-  const s = clean(v);
-  if (s === null) return null;
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|\b)/);
-  let day: string | null = null;
-  if (iso) day = `${iso[1]!}-${iso[2]!}-${iso[3]!}`;
-  const m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})/);
-  if (!day && m) day = `${m[3]!}-${m[2]!.padStart(2, '0')}-${m[1]!.padStart(2, '0')}`;
-  if (!day) {
-    const t = Date.parse(s);
-    if (!Number.isFinite(t)) return null;
-    day = new Date(t).toISOString().slice(0, 10);
-  }
-  return validDateOnly(day) && day >= MIN_DATA_DAY ? day : null;
-}
-
-function saneDateCeiling(now: Date): string {
-  return `${now.getUTCFullYear() + 50}-12-31`;
-}
-
-function toISODate(v: unknown, now: Date = new Date()): string | null {
-  const day = normalizedDateOnly(v);
-  return day !== null && day <= saneDateCeiling(now) ? day : null;
-}
-
-function toEventDate(v: unknown, now: Date = new Date()): string | null {
-  return toISODate(v, now);
-}
-
-const dateOnly = (s: unknown): string | null => toEventDate(s);
+const dateOnly = (s: unknown): string | null => toISODate(s);
 const finiteNum = (v: unknown): number | null => {
   if (v === null || v === undefined) return null;
   if (typeof v === 'string' && v.trim() === '') return null;
@@ -86,12 +38,8 @@ function validateDay(day: string, label: string): void {
   }
 }
 
-function subtractDays(day: string, days: number): string {
-  validateDay(day, 'day');
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() - Math.max(0, Math.floor(days)));
-  return d.toISOString().slice(0, 10);
-}
+const subtractDays = (day: string, days: number): string =>
+  addDays(day, -Math.max(0, Math.floor(days)));
 
 // Minimal shapes of the OCDS fields we read (the feed carries far more; keep it loose on purpose).
 export interface OcdsRelease {
@@ -216,6 +164,11 @@ export interface AmendmentStagingRow {
   reason: string | null;
   circumstances: string | null;
   sme: string | null;
+  // The EOP procedure id (OCDS `tender.id`) — the bridge to the УНП. The OCID is a surrogate; the
+  // real УНП is not in the OCDS release, so the ETL recovers it via tender_ext_id → raw_tenders → unp
+  // in scripts/derive-amendments.sql (and scripts/refresh-slice.sql on the incremental path), mirroring
+  // the OCDS-lots bridge that lives in scripts/normalize-raw.sql. See issue #286.
+  tender_ext_id: string | null;
 }
 
 export interface PartyStagingRow {
@@ -317,7 +270,7 @@ export function releaseToContracts(rel: OcdsRelease, meta: OcdsMeta): ContractSt
       dataset_variant: 'OCDS',
       seq_no: null,
       document_number: rel.id ?? null,
-      contract_number: c.id ?? null,
+      contract_number: clean(c.id),
       contract_date: dateOnly(c.dateSigned),
       published_at: ctx.published_at,
       unp: rel.ocid ?? null,
@@ -363,7 +316,7 @@ export function releaseToAmendments(rel: OcdsRelease, meta: OcdsMeta): Amendment
         dataset_variant: 'OCDS',
         seq_no: null,
         document_number: rel.id ?? null,
-        contract_number: c.id ?? null,
+        contract_number: clean(c.id),
         contract_date: dateOnly(c.dateSigned),
         published_at: ctx.published_at,
         unp: rel.ocid ?? null,
@@ -375,14 +328,23 @@ export function releaseToAmendments(rel: OcdsRelease, meta: OcdsMeta): Amendment
         contract_subject: c.title || sup.awardTitle || null,
         contractor_eik: sup.eik,
         contractor_name: sup.name,
-        value_before: null,
-        value_after: finiteNum(c.value?.amount),
+        // An OCDS contractAmendment/contractUpdate release carries the contract value as it stands in
+        // that release — measured against the EOP annex stream this is the value BEFORE the amendment,
+        // never a reliable "after" (issue #286). Record it as value_before with a null value_after so an
+        // OCDS row can never drive the derived current_value (derive-amendments.sql selects the latest
+        // non-null value_after); the authoritative after-value comes from the EOP annex.
+        value_before: finiteNum(c.value?.amount),
+        value_after: null,
         value_delta: null,
         currency: isoCurrency(c.value?.currency),
         description: amd?.description || null,
         reason: amd?.rationale || null,
         circumstances: null,
         sme: null,
+        // OCDS tender.id === the EOP procedure id; the bridge to the УНП (derive-amendments.sql, and
+        // refresh-slice.sql on the incremental path). The ocid stored in `unp` here is a surrogate that
+        // the ETL bridge rewrites to the real УНП.
+        tender_ext_id: clean(rel.tender?.id),
       },
     ];
   });
@@ -450,6 +412,27 @@ export function computeCatchupWindow({
     ? subtractDays(maxLoadedDate, lookbackDays)
     : subtractDays(today, lookbackDays);
   return { from: from > today ? today : from, to: today };
+}
+
+/**
+ * A full derive rebuilds the domain from whatever the staging tables hold — `scripts/normalize-raw.sql`
+ * opens with `DELETE FROM contracts` — so every contract outside the loaded window is dropped. It is
+ * only sound when the window reaches back to the first day the feed is loaded from, or when there is
+ * no corpus yet (the initial backfill). A gap-aware catch-up window never does, which is why
+ * `--catchup` derives a slice.
+ */
+export function fullDeriveIsSafe({
+  windowFrom,
+  feedStart,
+  hasCorpus,
+}: {
+  windowFrom: string;
+  feedStart: string;
+  hasCorpus: boolean;
+}): boolean {
+  validateDay(windowFrom, 'windowFrom');
+  validateDay(feedStart, 'feedStart');
+  return !hasCorpus || windowFrom <= feedStart;
 }
 
 export function daysInWindow(from: string, to: string): number {
@@ -523,6 +506,7 @@ export const AMENDMENT_STAGING_COLS: (keyof AmendmentStagingRow)[] = [
   'reason',
   'circumstances',
   'sme',
+  'tender_ext_id',
 ];
 
 export const PARTY_STAGING_COLS: (keyof PartyStagingRow)[] = [

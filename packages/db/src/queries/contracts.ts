@@ -4,7 +4,7 @@
 import type { ContractListItem, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS, PROCEDURE_GROUPS, procedureGroup } from '@sigma/config';
 import { cleanName, entityName } from '@sigma/shared';
-import { csvCell } from './csv';
+import { csvResponse } from './csv';
 import { assertCovers } from './filter-guard';
 import {
   authoritySlug,
@@ -50,6 +50,13 @@ export const CONTRACT_FILTER_KEYS = [
 // errors, add the new filter key to CONTRACT_FILTER_KEYS.
 assertCovers<ContractListParams, typeof CONTRACT_FILTER_KEYS>();
 
+// SYNC: each expr is backed by a matching expression index so a keyset page walks it instead of
+// full-scanning + temp-B-tree-sorting the whole table (D1 bills rows scanned). The COALESCE sentinels
+// must stay byte-identical to the indexes: value → idx_contracts_value_desc/asc (migrations/0000),
+// date → idx_contracts_signed_desc/asc (migrations/0005). Changing a default here without the index
+// silently drops the index — list-sort-indexes.test.ts asserts the EXPLAIN plan to catch that.
+// Scope: the index-walk guarantee covers the UNFILTERED sort paths; with an active filter the planner
+// may prefer the filter's index and temp-sort the (much smaller) filtered set — acceptable by design.
 const SORTS: Record<ContractSort, { expr: string; dir: 'asc' | 'desc' }> = lookup({
   'value-desc': { expr: 'COALESCE(c.amount_eur, -1)', dir: 'desc' },
   'value-asc': { expr: 'COALESCE(c.amount_eur, 1e18)', dir: 'asc' },
@@ -96,13 +103,14 @@ interface ContractRow {
   signed_at: string | null;
   bids_received: number | null;
   amount_eur: number | null;
+  value_flag: string;
 }
 
 const SELECT = `
   SELECT c.id, COALESCE(NULLIF(c.contract_subject, ''), t.title) AS subject, t.source_id AS unp,
          t.cpv_code, c.eu_funded, t.authority_id, a.name AS authority_name,
          c.bidder_id, b.name AS bidder_name, b.kind AS bidder_kind,
-         t.procedure_type, c.signed_at, c.bids_received, c.amount_eur`;
+         t.procedure_type, c.signed_at, c.bids_received, c.amount_eur, c.value_flag`;
 const FROM = `
   FROM contracts c
   JOIN tenders t ON t.id = c.tender_id
@@ -216,6 +224,11 @@ function toItem(r: ContractRow): ContractListItem {
     signedAt: r.signed_at,
     bidsReceived: r.bids_received,
     valueEur: r.amount_eur,
+    // A `value_low` row HAS a value and is summed, so without this the list renders it exactly like a
+    // trustworthy figure — the headline counts them („N с непотвърдена стойност") while the rows stay
+    // silent about which ones. The other verdicts either blank the value (handled by valueEur === null)
+    // or are repaired upstream, so this single boolean covers what the list can usefully say.
+    valueUnverified: r.value_flag === 'value_low',
   };
 }
 
@@ -426,66 +439,39 @@ export function streamContractsCsv(db: D1Database, p: ContractListParams): Respo
   const filters = buildFilters(p);
   const CHUNK = 1000;
   let afterRowid = 0;
-  let done = false;
-  const encoder = new TextEncoder();
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoder.encode('﻿' + CSV_COLUMNS.join(',') + '\n'));
-    },
-    async pull(controller) {
-      if (done) return;
-      const where = filters.sql ? filters.sql + ' AND c.rowid > ?' : ' WHERE c.rowid > ?';
-      const sql = `${SELECT}, c.rowid AS rowid, a.bulstat AS authority_eik, b.eik_normalized AS contractor_eik
+  const where = filters.sql ? filters.sql + ' AND c.rowid > ?' : ' WHERE c.rowid > ?';
+  const sql = `${SELECT}, c.rowid AS rowid, a.bulstat AS authority_eik, b.eik_normalized AS contractor_eik
         ${FROM}${where} ORDER BY c.rowid LIMIT ?`;
+  return csvResponse(
+    CSV_COLUMNS,
+    CHUNK,
+    async () => {
       const { results } = await db
         .prepare(sql)
         .bind(...filters.params, afterRowid, CHUNK)
         .all<CsvRow>();
-      if (results.length === 0) {
-        done = true;
-        controller.close();
-        return;
-      }
-      let block = '';
-      for (const r of results) {
-        block +=
-          [
-            // CSV carries the RAW id (no URL escaping): literal `/`, `%`, … — not the `%2F`/`%25`
-            // path-safe slug (contractSlug), which exists only for hrefs. A data export wants the true
-            // id for joins/lookups, so this is deliberately NOT the URL form (#221 review).
-            bareContractId(r.id),
-            r.unp,
-            r.subject,
-            cleanName(r.authority_name),
-            r.authority_eik,
-            entityName(cleanName(r.bidder_name), r.bidder_kind),
-            r.contractor_eik,
-            r.bidder_kind,
-            r.cpv_code ? r.cpv_code.slice(0, 2) : '',
-            procedureGroup(r.procedure_type).label,
-            r.signed_at,
-            r.amount_eur,
-            r.eu_funded === 1 ? '1' : '0',
-            r.bids_received,
-          ]
-            .map(csvCell)
-            .join(',') + '\n';
-        afterRowid = r.rowid;
-      }
-      controller.enqueue(encoder.encode(block));
-      if (results.length < CHUNK) {
-        done = true;
-        controller.close();
-      }
+      if (results.length) afterRowid = results[results.length - 1]!.rowid;
+      return results;
     },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': 'attachment; filename="sigma-contracts.csv"',
-      'Cache-Control': 'public, max-age=3600',
-    },
-  });
+    (r) => [
+      // CSV carries the RAW id (no URL escaping): literal `/`, `%`, … — not the `%2F`/`%25`
+      // path-safe slug (contractSlug), which exists only for hrefs. A data export wants the true
+      // id for joins/lookups, so this is deliberately NOT the URL form (#221 review).
+      bareContractId(r.id),
+      r.unp,
+      r.subject,
+      cleanName(r.authority_name),
+      r.authority_eik,
+      entityName(cleanName(r.bidder_name), r.bidder_kind),
+      r.contractor_eik,
+      r.bidder_kind,
+      r.cpv_code ? r.cpv_code.slice(0, 2) : '',
+      procedureGroup(r.procedure_type).label,
+      r.signed_at,
+      r.amount_eur,
+      r.eu_funded === 1 ? '1' : '0',
+      r.bids_received,
+    ],
+    'sigma-contracts.csv',
+  );
 }

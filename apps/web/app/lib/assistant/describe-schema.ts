@@ -1,5 +1,13 @@
 // describe_schema — the curated data dictionary the model reads before writing any SQL.
 //
+// It is ALSO the allow-list the SQL guard enforces (`ALLOWED_TABLES`, sql-ast-guard.ts), so a table
+// listed here is a table the model can read. The line is drawn at what the site PUBLISHES, not at
+// whether a row names a person: the assistant is a better way to search what is already on the page,
+// and refusing it there would only make the same public fact harder to reach. `search_index` is
+// therefore listed — its rows are the profiles the site serves, 'official' and 'person' included.
+// What the site does not publish stays out at every route: `related_persons_internal` carries names
+// that are never shown (ADR-0032), and the guard's own test walks every way of reaching it.
+//
 // Per spec §9 point 2 this is the highest-leverage prompt asset: a weak 27B writes correct SQL only
 // if the dictionary spells out the non-obvious traps it cannot guess. Getting `SUM(amount)` instead
 // of `SUM(amount_eur)` returns a garbage total attributed to АОП — defamation/disinfo by accident.
@@ -10,11 +18,13 @@ export const DATA_TRAPS: string[] = [
   'Парични агрегати: СУМИРАЙ САМО `contracts.amount_eur` (каноничен EUR, безопасен за сумиране). ' +
     'НИКОГА не сумирай `contracts.amount` — то е „както е записано" в смесена валута (`currency`), само за показване.',
   'Канонична база за всяка парична сума: `contracts.amount_eur IS NOT NULL`. НЕ филтрирай по ' +
-    '`value_flag`: включи `ok`, `review`, `annex_suspect`, `value_low` и поправените `value_suspect` редове.',
+    '`value_flag`: включи `ok`, `review`, `annex_suspect`, `annex_total_suspect`, `value_low` и ' +
+    'поправените `value_suspect` редове.',
   '`amount_eur IS NULL` означава, че няма използваема EUR стойност (например `value_suspect` без ' +
     'прогноза за поправка или чужда валута без FX курс); само тези редове се изключват от парични суми.',
-  '`value_flag` ∈ {ok, review, annex_suspect, value_suspect, value_low} мени значението на стойността ' +
-    'на реда, но не и каноничната база; `date_flag` ∈ {ok, signed_after_publication} е вердикт за датата.',
+  '`value_flag` ∈ {ok, review, annex_suspect, annex_total_suspect, value_suspect, value_low} мени ' +
+    'значението на стойността на реда, но не и каноничната база; `date_flag` ∈ {ok, ' +
+    'signed_after_publication} е вердикт за датата.',
   "`tenders.procedure_type = 'неизвестна'` маркира СИНТЕТИЧНИ (само-договорни) преписки — " +
     'изключи ги при анализ на разпределението по процедура, освен ако нарочно ги искаш.',
   '`lots` са на grain по обособена позиция — не ги брой едно към едно срещу `contracts`.',
@@ -103,7 +113,7 @@ export const TABLES: TableDoc[] = [
     name: 'search_index',
     grain: 'FTS5 индекс',
     columns:
-      "kind ('authority'|'company'|'contract'), ref, title, ident, subtitle, amount UNINDEXED",
+      "kind ('authority'|'company'|'contract'|'official'|'person'), ref, title, ident, subtitle, amount UNINDEXED",
   },
   {
     name: 'data_freshness',
