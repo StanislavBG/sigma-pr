@@ -151,6 +151,17 @@ describe('useFullscreen', () => {
     expect(target.dataset.fs).toBe('false');
   });
 
+  it('stays fullscreen when a descendant of its container took fullscreen', () => {
+    const { getByTestId, getByText } = render(<Harness />);
+    const target = getByTestId('target');
+
+    setFullscreenElement(getByText('toggle'));
+    act(() => {
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    expect(target.dataset.fs).toBe('true');
+  });
+
   it('stops listening once unmounted', () => {
     const remove = vi.spyOn(document, 'removeEventListener');
     const { unmount } = render(<Harness />);

@@ -35,31 +35,27 @@ export function getMulti(params: URLSearchParams, key: string): string[] {
 // is dropped so hostile ?cpv spam cannot fan the loader out into unbounded per-group SQL work.
 export const MAX_CPV_GROUP_SELECTION = 10;
 
-// Loose bound on the raw ?cpv value count (after comma-splitting), applied before validation, so
-// a flood of values — whether from repeated params or one long CSV param — can't blow up the
-// dedup/filter work below regardless of how many turn out to be valid — independent of
-// MAX_CPV_GROUP_SELECTION so leading invalid values can't crowd out valid ones once the precise
-// cap is applied after validation.
-const MAX_CPV_RAW_VALUES = MAX_CPV_GROUP_SELECTION * 5;
-
 /**
  * The обзор lenses' CPV multi-select (`?cpv=45233&cpv=33600` or `?cpv=45233,33600` on /trends):
  * validated 5-digit group codes only, deduped, order-preserving, capped at MAX_CPV_GROUP_SELECTION.
  * Malformed or excess codes are dropped before they reach a filter or mint an edge-cache key
- * variant (CWE-349). The raw-input bound (MAX_CPV_RAW_VALUES) is applied AFTER the comma-split,
- * so a single param carrying a long CSV list (`?cpv=1,2,3,...`) is bounded the same as that many
- * repeated params — not skipped by capping the pre-split param count. The precise cap is applied
- * only after validation, so leading invalid values can't truncate away valid codes.
+ * variant (CWE-349). One pass over the raw values (repeated params and CSV parts alike): each is
+ * validated and deduped BEFORE it counts toward the cap, and the scan stops at the first
+ * MAX_CPV_GROUP_SELECTION distinct valid codes — so hostile invalid/duplicate values in front can
+ * never starve valid codes behind them, and a long CSV is bounded the same as that many repeated
+ * params. Worst case O(n) in the query-string length (already bounded by the URL limit).
  */
 export function cpvGroupSelection(sp: URLSearchParams): string[] {
-  const all = sp
-    .getAll('cpv')
-    .flatMap((v) => v.split(','))
-    .map((v) => v.trim())
-    .slice(0, MAX_CPV_RAW_VALUES);
-  return Array.from(new Set(all))
-    .filter((v) => /^\d{5}$/.test(v))
-    .slice(0, MAX_CPV_GROUP_SELECTION);
+  const picked = new Set<string>();
+  for (const raw of sp.getAll('cpv')) {
+    for (const part of raw.split(',')) {
+      const v = part.trim();
+      if (!/^\d{5}$/.test(v)) continue;
+      picked.add(v);
+      if (picked.size >= MAX_CPV_GROUP_SELECTION) return [...picked];
+    }
+  }
+  return [...picked];
 }
 
 /**

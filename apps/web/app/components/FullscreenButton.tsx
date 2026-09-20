@@ -10,7 +10,7 @@ export function useFullscreen<T extends HTMLElement>() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    const onChange = () => setIsFullscreen(document.fullscreenElement === ref.current);
+    const onChange = () => setIsFullscreen(!!ref.current?.contains(document.fullscreenElement));
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);

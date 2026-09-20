@@ -26,8 +26,8 @@ export interface OverrunRow {
   subject: string;
   authorityName: string;
   authoritySlug: string;
-  /** Authority ЕИК (the authority-route key) — for the inspector „Възложител · ЕИК" line. */
-  authorityEik: string;
+  /** Authority ЕИК (digits-only, from `authorities.bulstat`; NULL when absent) — for the inspector „Възложител · ЕИК" line. Not the route key (that is `authoritySlug`). */
+  authorityEik: string | null;
   bidderName: string;
   bidderSlug: string;
   /** Bidder ЕИК (digits-only, NULL for name-keyed bidders without a valid ЕИК). */
@@ -203,6 +203,7 @@ interface RawRow {
   subject: string;
   authority_id: string;
   authority_name: string;
+  authority_eik: string | null;
   bidder_id: string;
   bidder_name: string;
   bidder_kind: 'company' | 'consortium';
@@ -250,6 +251,7 @@ function leaderboardSql(by: 'absolute' | 'percent'): string {
   return `SELECT c.id AS contract_id,
                 COALESCE(NULLIF(TRIM(c.contract_subject), ''), t.title) AS subject,
                 t.authority_id AS authority_id, a.name AS authority_name,
+                a.bulstat AS authority_eik,
                 c.bidder_id AS bidder_id, b.name AS bidder_name, b.kind AS bidder_kind,
                 b.eik_normalized AS bidder_eik,
                 c.signing_value_eur AS signing_eur, c.current_value_eur AS current_eur,
@@ -285,7 +287,7 @@ function mapOverrunRows(raw: RawRow[]): OverrunRow[] {
         subject: r.subject,
         authorityName: cleanName(r.authority_name),
         authoritySlug: authoritySlug(r.authority_id),
-        authorityEik: authoritySlug(r.authority_id),
+        authorityEik: r.authority_eik?.replace(/\D/g, '') || null,
         bidderName: entityName(bidderName, r.bidder_kind),
         bidderSlug: companySlug(r.bidder_id),
         bidderEik: r.bidder_eik ?? null,

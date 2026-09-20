@@ -23,6 +23,7 @@ const rawRow = (over: Partial<Record<string, unknown>> = {}) => ({
   subject: 'Доставка на услуги',
   authority_id: 'auth:000695089',
   authority_name: 'Министерство на финансите',
+  authority_eik: '000695089',
   bidder_id: 'eik:103267194',
   bidder_name: 'ТЕСТ ООД',
   bidder_kind: 'company' as const,
@@ -106,6 +107,20 @@ describe('getTopOverruns', () => {
     // term fields for the „Срок" row + status badge
     expect(r.endDate).toBe('2024-12-31');
     expect(r.durationDays).toBe(540);
+  });
+
+  it('carries the raw digits-only authority ЕИК from bulstat — not the authority route slug', async () => {
+    const { db, sql } = fakeDb([
+      rawRow({ authority_id: 'auth:slug-ne-eik', authority_eik: ' BG 000695089 ' }),
+      rawRow({ contract_id: 'c:124', authority_eik: null }),
+    ]);
+
+    const { rows } = await getTopOverruns(db, { by: 'absolute' });
+
+    expect(rows[0]!.authoritySlug).toBe('slug-ne-eik');
+    expect(rows[0]!.authorityEik).toBe('000695089');
+    expect(rows[1]!.authorityEik).toBeNull();
+    expect(sql.find(isLeaderboard)).toContain('a.bulstat AS authority_eik');
   });
 
   it('normalises a dirty CPV (non-digit in the prefix) to its real division label', async () => {

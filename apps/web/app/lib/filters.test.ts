@@ -158,6 +158,15 @@ describe('cpvGroupSelection', () => {
     expect(out.at(-1)).toBe(String(10000 + MAX_CPV_GROUP_SELECTION - 1));
   });
 
+  it('validates and dedupes BEFORE any raw bound, so >50 leading junk/duplicate values cannot starve valid codes', () => {
+    const junk = Array.from({ length: 80 }, (_, i) => (i % 2 ? 'cpv=45233' : 'cpv=abc')).join('&');
+    expect(cpvGroupSelection(sp(`${junk}&cpv=33600&cpv=15800`))).toEqual([
+      '45233',
+      '33600',
+      '15800',
+    ]);
+  });
+
   it('caps the raw-value bound the same for one comma-separated param as for that many repeated params', () => {
     const values = Array.from({ length: 500 }, (_, i) => 10000 + i);
     const oneParam = cpvGroupSelection(sp(`cpv=${values.join(',')}`));
