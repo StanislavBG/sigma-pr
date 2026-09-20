@@ -91,6 +91,14 @@ const rebuildStages = [
   'verify',
 ];
 const MINUTE = 60_000;
+/** How long the alarm waits to hear whether its workflow still exists. */
+const OWNER_LOOKUP_MS = 2_000;
+/** Bounds a promise that has no signal of its own; the loser is simply abandoned. */
+const withTimeout = <T>(work: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    work,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('lookup timed out')), ms)),
+  ]);
 // Restart a stalled attempt; three attempts without advancing the durable high-water mark stop.
 const STALL_MS = 20 * MINUTE;
 const MAX_FAILURES = 3;
@@ -204,7 +212,14 @@ export class DeclarationContainer extends DurableObject<DeclarationEnv> {
     const workflow = run.target ? this.env.REBUILD_RUN : this.env.DECLARATIONS_RUN;
     if (!run.requestId || !workflow) return false;
     try {
-      const { status } = await (await workflow.get(run.requestId)).status();
+      // Bounded, because this runs at the head of EVERY alarm and an unanswered lookup used to hold the
+      // whole minute's work behind it — measured at ten seconds a time, once a minute, for a question
+      // whose failure already means „say nothing". Losing the answer costs one more minute of a run
+      // nobody waits for; waiting for it costs every alarm.
+      const { status } = await withTimeout(
+        workflow.get(run.requestId).then((instance) => instance.status()),
+        OWNER_LOOKUP_MS,
+      );
       return ['terminated', 'errored', 'complete'].includes(status);
     } catch {
       return false;
@@ -402,9 +417,16 @@ export class DeclarationContainer extends DurableObject<DeclarationEnv> {
         const reason = status.reason || `${status.stage} ${status.state}`;
         // A yield is our own code stopping on purpose, with its work accepted — retry it wherever it
         // happens. Network stages are retried too; a data or audit refusal is final.
+        //
+        // `reindex` belongs with them and was missing: it is a run of `wrangler d1 execute` per chunk of
+        // twenty-five people, so a transient D1 error is the ordinary weather there — and it sits AFTER
+        // publish, where giving up throws away six hours of work whose result is already served. It
+        // happened on stage on 20.09.2026: chunk 017 failed and a completed, published run was recorded
+        // as failed with a stale search index. Each chunk is its own delete+insert, so repeating one is
+        // safe.
         if (
           status.state === 'yielded' ||
-          ['fetch', 'import', 'registry'].includes(status.stage) ||
+          ['fetch', 'import', 'registry', 'reindex'].includes(status.stage) ||
           status.signal
         )
           await this.retry(run, reason, status.state === 'yielded');
