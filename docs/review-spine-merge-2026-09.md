@@ -81,3 +81,32 @@ PRD-и с deliverable върху head клон на PR (а не върху job �
 `6519fc60…998e9d`; `coverage-baseline.json` == main на трите; неразрешени нишки 2 / 4 / 5, единствената
 `isOutdated` е на #171 (`coverage-baseline.json`). CI на #170/#171 пада само на `Coverage ratchet` —
 собственост на PRD `808`, не е пипано.
+
+## Spine merge на #172 / #193 (2026-09-20)
+
+`origin/main` (`157f5ede`) влят с `git merge` (без rebase, без force-push) в двата клона; push към `fork`
+беше fast-forward.
+
+| Клон | PR | Стар head | Нов head (merge) | CONFLICT в merge-tree | Неразрешени нишки (outdated) |
+| --- | --- | --- | --- | --- | --- |
+| `pr/analyze` | #172 | `49a4f1ea` | `ffbca457` | 0 | 6 (0) |
+| `docs/methodology-dashboards` | #193 | `f39ab996` | `c600b67d` | 0 | 6 (0) |
+
+Забележка: локалният `docs/methodology-dashboards` (`00272bdc`) е разклонен от `fork/…` (head на PR-а,
+`f39ab996`); merge-ът е върху `fork/…`, локалният клон не е пипан.
+
+- Миграцията е `0023_contracts_overrun_index.sql`, sha256 `6519fc60…998e9d` — идентична с #169/#170/#171.
+  `migrations.test.ts` сочи към новото име. `coverage-baseline.json` == `origin/main` на двата клона.
+- Приложени са същите резолюции: `query-params.ts`/`pages.css` — и двете страни; `cached(1800)` от main
+  (в `trends.tsx` и `analytics.tsx`); `TrendChart` с `compact` от main + `TrendGranularity`; `TrendBlock`
+  е байт-идентичен с #170. Четирите `packages/db` теста: harness-ът `fakeD1` остава, добавени са и
+  main-овите нови тестове (без ръчно писани fake-D1).
+- Намерено при merge-а: `git merge` на `pages.css` оставя непълен `@media` блок; правилният резултат е
+  3-way (`git merge-file --diff3`) с обединение на двата добавени блока. Ако #172/#193 се мърджат отново —
+  проверявай `prettier --check`.
+- Умишлени разлики между петте клона: `query-params.ts`, `trends.tsx`, `cache-key.test.ts`, `pages.css` носят
+  различно PR-специфично съдържание (#172/#193 са независими от #170: имат `RESERVED_CACHE_PARAMS`, не
+  `PLANNED_QUERY_PARAMS`). `TrendChart.tsx` на #172 е идентичен с #170 (`yearAxisTicks`); на #193 е със
+  същата логика inline (без `trendAxis.ts`).
+- Проверки и на двата клона: `typecheck` и `lint` минават; `packages/db` тестове 824 / 826 минават,
+  `apps/web` тестове 935 / 992 минават. Coverage ratchet не е пускан — PRD 808.
