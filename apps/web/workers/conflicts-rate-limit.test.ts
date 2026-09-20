@@ -27,6 +27,19 @@ describe('rateLimitConflictsRoute', () => {
     }
   });
 
+  it('limits a person’s page the same — a named person’s roles across companies', async () => {
+    for (const path of [`/persons/${'a'.repeat(64)}`, `/persons/${'a'.repeat(64)}.data`]) {
+      const { limiter, limit } = rateLimiter(false);
+      const response = await rateLimitConflictsRoute(
+        new Request(`http://local${path}`, { headers: { 'CF-Connecting-IP': '203.0.113.43' } }),
+        { CONFLICTS_RATE_LIMITER: limiter },
+        false,
+      );
+      expect(limit, path).toHaveBeenCalledWith({ key: '203.0.113.43' });
+      expect(response?.status, path).toBe(429);
+    }
+  });
+
   it('limits the single-fetch .data twins the same as the bare paths (the scrape vector)', async () => {
     for (const path of ['/conflicts.data', '/conflicts/official/ivan-petrov.data']) {
       const { limiter } = rateLimiter(false);
@@ -69,6 +82,24 @@ describe('rateLimitConflictsRoute', () => {
       ),
     ).resolves.toBeNull();
     expect(limit).not.toHaveBeenCalled();
+  });
+
+  it('does not limit non-GET/HEAD methods (the budget is for read scraping)', async () => {
+    // The limiter guards enumeration of the published surface, which is read-only. A POST/OPTIONS to the
+    // same path is not a scrape vector and must pass through untouched rather than consuming the budget.
+    for (const method of ['POST', 'OPTIONS', 'DELETE']) {
+      const { limiter, limit } = rateLimiter(false);
+      const response = await rateLimitConflictsRoute(
+        new Request('http://local/conflicts', {
+          method,
+          headers: { 'CF-Connecting-IP': '203.0.113.40' },
+        }),
+        { CONFLICTS_RATE_LIMITER: limiter },
+        false,
+      );
+      expect(response, method).toBeNull();
+      expect(limit, method).not.toHaveBeenCalled();
+    }
   });
 
   it('does not limit unrelated paths', async () => {
