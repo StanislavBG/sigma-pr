@@ -1,7 +1,7 @@
 /* Reusable UI components — atoms and patterns shared across routes. */
 
 :root {
-  /* The trend/CPV chip mono face mirrors the design mock's IBM Plex Mono, falling back to the app token. */
+  /* The trend/CPV chip mono face mirrors the design mock's IBM Plex Mono. It is not bundled (no @font-face) — it applies only where installed and otherwise falls back to the app token `--font-mono`. */
   --font-mono-plex: 'IBM Plex Mono', var(--font-mono);
 }
 

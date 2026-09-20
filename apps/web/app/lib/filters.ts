@@ -262,6 +262,7 @@ export const PARAM_ORDER = [
   'cpv', // /trends: repeatable CPV group multi-select facet
   'angle', // /trends: time | cpv | cross lens
   'step', // /trends: series granularity (m|q|y)
+  'g', // /trends: retired granularity param (#197 back-compat) — still read while `step` is absent, so never dropped
   'cur', // /trends: include the current (partial) period
   'year',
   'procedure',

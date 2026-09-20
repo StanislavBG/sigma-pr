@@ -68,11 +68,14 @@ export function ComboTrendChart({
       : `M${xy(partialIdx)} L${xy(partialIdx + 1)}`;
   // If the partial period is not last (invariant violated upstream), the points after it are still
   // real, complete data — draw them as their own solid segment instead of silently dropping them.
+  // When partialIdx === 0 the dashed segment already covers partial → next, so the solid tail starts
+  // one point later instead of drawing over it.
+  const tailStart = solidEnd >= 0 ? partialIdx : partialIdx + 1;
   const tail =
     hasPartial && partialIdx < n - 1
       ? points
-          .slice(partialIdx)
-          .map((_p, i) => `${i ? 'L' : 'M'}${xy(partialIdx + i)}`)
+          .slice(tailStart)
+          .map((_p, i) => `${i ? 'L' : 'M'}${xy(tailStart + i)}`)
           .join(' ')
       : '';
 

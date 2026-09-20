@@ -112,6 +112,13 @@ describe('cacheKey', () => {
     expect(cacheUrl('http://local/contracts/%').pathname).toBe('/contracts/%');
   });
 
+  it('keys the retired /trends ?g= granularity so a bookmarked ?g=year never shares an entry with the default (CWE-349, #197)', () => {
+    const key = (qs: string) => cacheKey(new Request(`https://x.test/trends${qs}`), 'v1').url;
+    expect(key('?g=year')).not.toBe(key(''));
+    expect(key('?g=year')).not.toBe(key('?g=month'));
+    expect(new URL(key('?g=year')).searchParams.get('g')).toBe('year');
+  });
+
   it('keys the /trends „вкл. текущия месец" toggle so the with-current chart gets its own entry (CWE-349)', () => {
     // ?cur=1 re-runs the trend server-side WITH the current partial period — a different chart,
     // different totals and year cards. It must never share a cached SSR body with the default view.

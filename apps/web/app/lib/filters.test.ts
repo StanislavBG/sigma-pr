@@ -227,6 +227,12 @@ describe('searchHref', () => {
     expect(new URLSearchParams(searchHref(sp, 'q')).getAll('year')).toEqual(['2024', '2023']);
   });
 
+  it('keeps a bookmarked /trends ?g=year through link generation, right after step (#197 back-compat)', () => {
+    const href = withParams(new URLSearchParams('g=year&angle=time'), { cpv: ['45100'] });
+    expect(href).toBe('?cpv=45100&angle=time&g=year');
+    expect(trendStep(new URLSearchParams(href))).toBe('y');
+  });
+
   it('preserves unknown keys not in PARAM_ORDER (e.g. contracts bids)', () => {
     const sp = new URLSearchParams('bids=1&sort=value-desc');
     expect(new URLSearchParams(searchHref(sp, 'q')).get('bids')).toBe('1');

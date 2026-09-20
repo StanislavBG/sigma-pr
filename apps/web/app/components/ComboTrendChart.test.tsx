@@ -46,6 +46,27 @@ describe('ComboTrendChart', () => {
     expect(d).toMatch(/^M[\d.]+ [\d.]+ L[\d.]+ [\d.]+$/);
   });
 
+  // The dashed segment for a partial at index 0 already covers point0 → point1, so the solid tail
+  // must start at point1 — starting it at point0 would overdraw the dashed segment in solid.
+  it('does not overdraw the dashed segment with a solid one when the partial is at index 0', () => {
+    const points: TrendPoint[] = [
+      { period: '2024-01', valueEur: 5, contracts: 1, partial: true },
+      { period: '2024-02', valueEur: 10, contracts: 2, partial: false },
+      { period: '2024-03', valueEur: 20, contracts: 3, partial: false },
+    ];
+    act(() => {
+      root.render(<ComboTrendChart points={points} granularity="month" />);
+    });
+    const dashed = comboLinePartial()!.getAttribute('d')!;
+    const solid = Array.from(container.querySelectorAll('path.combo-line')).map((el) =>
+      el.getAttribute('d'),
+    );
+    // solid[0] is the (empty-anchored) main line; the tail is the extra path when present.
+    const tail = solid[solid.length - 1]!;
+    const dashedStart = dashed.split(' L')[0]!;
+    expect(tail.startsWith(dashedStart)).toBe(false);
+  });
+
   it('detects a partial period at the last index (the normal case)', () => {
     const points: TrendPoint[] = [
       { period: '2024-01', valueEur: 5, contracts: 1, partial: false },
