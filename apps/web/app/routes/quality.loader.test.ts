@@ -59,12 +59,20 @@ describe('/quality loader', () => {
     expect(a.contractSort).toBe('score');
   });
 
-  it('hands sel/contract/band through verbatim for the db layer to validate (bound params only)', async () => {
+  it('drops hostile sel/contract/band values to null instead of forwarding them', async () => {
     await run(`?sel=${encodeURIComponent("x' OR 1=1 --")}&band=%27%3B&contract=..%2F..`);
     const a = lastArgs();
-    expect(a.sel).toBe("x' OR 1=1 --");
-    expect(a.band).toBe("';");
-    expect(a.contractId).toBe('../..');
+    expect(a.sel).toBeNull();
+    expect(a.band).toBeNull();
+    expect(a.contractId).toBeNull();
+  });
+
+  it('rejects an out-of-set band and an over-long key, accepts histogram bins', async () => {
+    await run(`?band=20&sel=${'a'.repeat(200)}`);
+    expect(lastArgs().band).toBeNull();
+    expect(lastArgs().sel).toBeNull();
+    await run('?band=19&sel=123456789');
+    expect(lastArgs()).toMatchObject({ band: '19', sel: '123456789' });
   });
 
   it('parses the ranking direction and avg-index range through the shared controls', async () => {

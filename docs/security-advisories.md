@@ -15,10 +15,13 @@ pnpm-lock.yaml`):
   backslash GHSA-wrjc-x8rr-h8h6); fixed by bumping the `react-router`/`@react-router/dev`
   pnpm overrides to `^7.18.0`. A fifth advisory, GHSA-qwww-vcr4-c8h2 (CSRF, CVSS 7.1), is
   scoped to react-router's unstable RSC APIs, which this app does not use (verified via
-  repo-wide grep), and has no fix in the 7.x line — it is suppressed via `osv-scanner.toml`
-  rather than forcing a major-version bump to react-router 8.x.
+  repo-wide grep). It was first carried as a single-id `osv-scanner.toml` ignore rather than a
+  major bump to react-router 8.x; main's #339 (75268c7) has since removed that entry because
+  react-router 7.18.2 no longer matches the advisory (a 7.x patch shipped), so **no suppression
+  remains** — `osv-scanner.toml` holds only its header, and a leftover unused ignore would itself
+  fail the scan.
 
-Verified clean (modulo the documented RSC-only suppression) with OSV-Scanner v2.4.0
+Verified clean, with no suppressions, with OSV-Scanner v2.4.0
 (`osv-scanner scan source -L pnpm-lock.yaml`).
 
 Rollout, by branch:

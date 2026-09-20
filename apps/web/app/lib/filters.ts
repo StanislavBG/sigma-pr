@@ -198,6 +198,39 @@ export function qualityRankingControls(sp: URLSearchParams): QualityRankingContr
   return { rankDir: rdir === 'asc' || rdir === 'desc' ? rdir : null, rankFrom, rankTo };
 }
 
+const QUALITY_BANDS: ReadonlySet<string> = new Set([
+  'weak',
+  'mid',
+  'good',
+  ...Array.from({ length: 20 }, (_, i) => String(i)),
+]);
+// Ranking keys / contract ids are opaque strings (ЕИК, CPV division, NUTS code, year, contract id):
+// bound as SQL params downstream, but still shape-checked here so a hostile value never reaches a
+// query or cache key — printable, no separators/quotes/path chars, bounded length.
+const QUALITY_KEY = /^[\p{L}\p{N}][\p{L}\p{N} ._:/-]{0,79}$/u;
+
+export interface QualityScopeControls {
+  sel: string | null;
+  contractId: string | null;
+  band: string | null;
+}
+
+/**
+ * Parse + validate the /quality scope params: ?band is checked against the fixed option set
+ * (weak|mid|good|0–19 histogram bins); ?sel and ?contract must match an opaque-key shape or are
+ * dropped to null (never passed through). The db layer re-validates at its own boundary.
+ */
+export function qualityScopeControls(sp: URLSearchParams): QualityScopeControls {
+  const key = (raw: string | null): string | null =>
+    raw != null && QUALITY_KEY.test(raw) && !raw.includes('..') ? raw : null;
+  const band = sp.get('band');
+  return {
+    sel: key(sp.get('sel')),
+    contractId: key(sp.get('contract')),
+    band: band != null && QUALITY_BANDS.has(band) ? band : null,
+  };
+}
+
 // Canonical serialization order so the same logical state always yields the same URL string —
 // good for history/bookmarks/caching. Filter facets first, then search/sort, then the paging cursor
 // markers. Link param order (cosmetic). Every entry must be in CANONICAL_QUERY_PARAMS (asserted in

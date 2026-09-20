@@ -42,3 +42,4 @@
 - [`pr-review-workflow.local.md`](pr-review-workflow.local.md) — работен процес по преглед на PR: sweep на коментарите, опашка от PRD-та, сигнализиране на ревюър.
 - [`review-spine-merge-2026-09.md`](review-spine-merge-2026-09.md) — запис на spine merge-а на #172/#193 (септември 2026).
 - [`review-supersession-2026-09.md`](review-supersession-2026-09.md) — триаж на заменените PR-и (септември 2026).
+- [`review-round-2026-09.md`](review-round-2026-09.md) — готовност за merge на всички 11 PR-а: конфликти, нишки, CI, поредност; нишките по #188 и 0024 на served D1.

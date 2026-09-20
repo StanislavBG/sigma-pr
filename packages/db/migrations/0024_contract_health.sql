@@ -15,14 +15,13 @@
 --
 -- Numbered 0024: main ships 0000-0022 (0012 is `0012_person_redirects`) and 0023 is reserved for the
 -- dashboard spine's `contracts_overrun_index`, so this is the next free slot.
--- CONFIRMED wrangler/deploy behaviour (verified against .github/workflows/deploy.yml 2026-08-31):
--- production's D1 migration ledger is NOT used for this chain — the base schema was created
--- out-of-band via `d1 execute --file`, so `wrangler d1 migrations apply` would try to replay 0000
--- and collide (the same reason 0003/0009/0010 each get their own hand-rolled, idempotent
--- `d1 execute --file <migration>` step in deploy.yml instead of a bulk `migrations apply`). This
--- file currently has NO such deploy.yml step, so these nine ALTERs do not yet reach production
--- through the existing deploy pipeline — tracked as a follow-up, out of scope for this migration
--- file. These nine ALTERs are purely additive (new nullable columns on existing tables) and read
+-- Production: the D1 migration ledger is NOT used for this chain (the base schema was created
+-- out-of-band via `d1 execute --file`, so `wrangler d1 migrations apply` would replay 0000 and
+-- collide). deploy.yml therefore applies these nine ALTERs itself in the "Ensure contract-health
+-- columns exist" step (probe pragma_table_info, ALTER only when absent). The served D1 does need
+-- them: ship-domain.mjs copies every source column and derive-contract-features.sql reads them.
+-- Write-up: docs/review-round-2026-09.md ("0024 on the served D1").
+-- These nine ALTERs are purely additive (new nullable columns on existing tables) and read
 -- no state introduced by 0012-0023, so applying after them in sorted order (fresh D1, CI, and the
 -- work-DB backfill in scripts/import.mjs) is deterministic and safe.
 

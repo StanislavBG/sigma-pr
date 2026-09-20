@@ -20,7 +20,7 @@ import { TotalsStrip, type Total } from '../components/TotalsStrip';
 import { Callout, Chip, Section } from '../components/ui';
 import { publicCache } from '../lib/cache';
 import { isMissingDerivedTableError } from '../lib/etl';
-import { qualityRankingControls } from '../lib/filters';
+import { qualityRankingControls, qualityScopeControls } from '../lib/filters';
 import { seoMeta } from '../lib/meta';
 
 // „Индекс на качеството" — the Contract Quality / Health Index page. Reads the ETL-built
@@ -155,6 +155,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // „Разбивка" ranking controls come from the shared parser (validated before they can shape a
   // cache key or a query — CWE-349); the db layer re-validates at its own boundary.
   const rank = qualityRankingControls(sp);
+  const scope = qualityScopeControls(sp);
   const grainParam = sp.get('grain');
   const grain = GRAIN_OPTIONS.some((g) => g.key === grainParam)
     ? (grainParam as QualityGrain)
@@ -166,9 +167,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       sort: sp.get('sort') === 'contracts' ? 'contracts' : 'score',
       dir: rank.rankDir,
       contractSort: sp.get('csort') === 'value' ? 'value' : 'score',
-      sel: sp.get('sel'),
-      contractId: sp.get('contract'),
-      band: sp.get('band'),
+      sel: scope.sel,
+      contractId: scope.contractId,
+      band: scope.band,
       rankFrom: rank.rankFrom,
       rankTo: rank.rankTo,
     });

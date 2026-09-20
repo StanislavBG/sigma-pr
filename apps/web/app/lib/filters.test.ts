@@ -11,6 +11,7 @@ import {
   pageNav,
   PARAM_ORDER,
   qualityRankingControls,
+  qualityScopeControls,
   searchHref,
   singleSelectFilters,
   sortHref,
@@ -529,5 +530,22 @@ describe('withParams — known params outside the canonical order', () => {
     expect(withParams(sp('company=111111111&sort=total&basis=matched'), { page: 2 })).toBe(
       '?sort=total&page=2&company=111111111&basis=matched',
     );
+  });
+});
+
+describe('qualityScopeControls', () => {
+  it('accepts opaque keys and fixed-set bands', () => {
+    expect(qualityScopeControls(sp('sel=eik:123&contract=c-9&band=good'))).toEqual({
+      sel: 'eik:123',
+      contractId: 'c-9',
+      band: 'good',
+    });
+  });
+  it('drops hostile / out-of-set values to null', () => {
+    expect(
+      qualityScopeControls(
+        sp(`sel=${encodeURIComponent("x' OR 1=1 --")}&contract=..%2F..&band=20`),
+      ),
+    ).toEqual({ sel: null, contractId: null, band: null });
   });
 });
