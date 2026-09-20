@@ -281,6 +281,15 @@ describe('getCpvGroupStats', () => {
     });
   });
 
+  it('drops a group whose distribution query returns no rows, and reports 0 groups when the count row is absent', async () => {
+    const empty = overviewDb({
+      calls: [],
+      all: (sql) => (sql.includes('GROUP BY grp') ? [{ grp: '77777', contracts: 3 }] : []),
+      first: () => null,
+    });
+    expect(await getCpvGroupStats(empty, 2)).toEqual({ groups: [], totalGroups: 0 });
+  });
+
   it('scans each group through a half-open cpv_code prefix range (indexable)', async () => {
     const calls: QueryCall[] = [];
     await getCpvGroupStats(db(calls), 2);

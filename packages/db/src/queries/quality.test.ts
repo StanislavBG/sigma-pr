@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { d1FromSqlite } from '@sigma/test-support';
+import { d1FromSqlite, fakeD1 } from '@sigma/test-support';
 import {
   coverageTier,
   getQuality,
@@ -205,7 +205,7 @@ function extractTableColumns(sql: string, table: string): string[] {
 
 let d1: D1Database;
 
-beforeAll(() => {
+function buildDb(withFixture: boolean): DatabaseSync {
   const db = new DatabaseSync(':memory:');
   // Full migration chain — the fixture writes 0003's health-index columns.
   const migrationsDir = resolve(root, 'packages/db/migrations');
@@ -228,8 +228,12 @@ beforeAll(() => {
     db.exec(`DROP TABLE IF EXISTS ${t};`);
   }
   db.exec(QUALITY_DDL);
-  db.exec(FIXTURE);
-  d1 = d1FromSqlite(db);
+  if (withFixture) db.exec(FIXTURE);
+  return db;
+}
+
+beforeAll(() => {
+  d1 = d1FromSqlite(buildDb(true));
 });
 
 // Schema-drift guard: QUALITY_DDL above is a third hand-copy of the quality schema (besides
@@ -602,5 +606,96 @@ describe('getQualitySummary', () => {
     expect(s.totalContracts).toBe(4);
     expect(s.scoredContracts).toBe(3);
     expect(s.avgOverall).toBeCloseTo(0.556, 3);
+  });
+});
+
+describe('getQuality — scope and label edge cases', () => {
+  let edge: D1Database;
+  beforeAll(() => {
+    const db = buildDb(true);
+    db.exec(`
+      INSERT INTO sector_quality_totals VALUES ('99', 0.5, 0.5, 0.5, 5, 5, 0, 0, 0.5, '2026-07-01');
+      INSERT INTO funding_quality_totals VALUES ('other', 0.5, 10, 10, 0.5, '2026-07-01');
+      UPDATE region_quality_totals SET nuts_label = NULL WHERE nuts = 'BG421';
+      UPDATE tenders SET cpv_code = NULL, procedure_type = 'неизвестна' WHERE id = 't:A';
+    `);
+    edge = d1FromSqlite(db);
+  });
+
+  it('falls back to the raw key/generic label when a rollup row has no catalogue label', async () => {
+    const sector = await getQuality(edge, { grain: 'sector' });
+    expect(sector.ranking.find((r) => r.key === '99')?.name).toBe('99 · CPV дивизия');
+    const funding = await getQuality(edge, { grain: 'funding' });
+    expect(funding.ranking.find((r) => r.key === 'other')?.name).toBe('other');
+    const region = await getQuality(edge, { grain: 'region' });
+    expect(region.ranking.find((r) => r.key === 'BG421')?.name).toBe('BG421');
+  });
+
+  it('scopes the list by supplier, region and the non-EU funding bucket', async () => {
+    const supplier = await getQuality(d1, { grain: 'supplier', sel: 'eik:200000001' });
+    expect(supplier.contracts.map((c) => c.id)).toEqual(['c:1', 'c:4']);
+    const region = await getQuality(d1, { grain: 'region', sel: 'BG411' });
+    expect(region.contracts.map((c) => c.id)).toEqual(['c:1', 'c:3']);
+    const national = await getQuality(d1, { grain: 'funding', sel: 'national' });
+    expect(national.contracts.map((c) => c.id)).toEqual(['c:1', 'c:2', 'c:3']);
+  });
+
+  it('maps a contract with no CPV to a null division and an unknown procedure to null', async () => {
+    const { contracts } = await getQuality(edge, { grain: 'authority', sel: 'auth:100000001' });
+    expect(contracts.find((c) => c.id === 'c:1')?.cpvDivision).toBeNull();
+    const card = await getQualityScorecard(edge, 'c:1');
+    expect(card?.leaves.procedureType).toBeNull();
+  });
+
+  it('clamps ?top: non-positive/absent → default 20, over the cap → 50, fractional floors', async () => {
+    expect((await getQuality(d1, {})).scope.top).toBe(20);
+    expect((await getQuality(d1, { top: -3 })).scope.top).toBe(20);
+    expect((await getQuality(d1, { top: 0 })).scope.top).toBe(20);
+    expect((await getQuality(d1, { top: 999 })).scope.top).toBe(50);
+    const two = await getQuality(d1, { grain: 'year', top: 1.9 });
+    expect(two.scope.top).toBe(1);
+    expect(two.ranking).toHaveLength(1);
+  });
+});
+
+describe('empty contract_features (pre-ETL D1)', () => {
+  it('reports zeros/nulls — unknown, never a fabricated score — and no scorecard', async () => {
+    const empty = d1FromSqlite(buildDb(false));
+    const q = await getQuality(empty, {});
+    expect(q.overview.totalContracts).toBe(0);
+    expect(q.overview.scoredContracts).toBe(0);
+    expect(q.overview.suspectContracts).toBe(0);
+    expect(q.overview.avgOverall).toBeNull();
+    expect(q.overview.meanCoverage).toBeNull();
+    expect(q.overview.pillars).toEqual({ a: null, b: null, c: null, d: null, e: null });
+    expect(q.overview.confidence).toEqual({ high: 0, medium: 0, low: 0, none: 0 });
+    expect(q.contracts).toEqual([]);
+    expect(q.scorecard).toBeNull();
+    const s = await getQualitySummary(empty);
+    expect(s).toEqual({
+      totalContracts: 0,
+      scoredContracts: 0,
+      avgOverall: null,
+      meanCoverage: null,
+    });
+  });
+});
+
+describe('absent aggregate rows (defensive D1 null)', () => {
+  it('falls back to zeros/nulls when D1 returns no aggregate row at all', async () => {
+    // Not reachable on SQLite (aggregates always yield a row) — this pins the `?? 0`/`?? null`
+    // fallbacks for a D1 that hands back null from .first().
+    const { db } = fakeD1([{ when: [], first: null, all: [] }]);
+    const q = await getQuality(db, {});
+    expect(q.overview.totalContracts).toBe(0);
+    expect(q.overview.avgOverall).toBeNull();
+    expect(q.overview.confidence).toEqual({ high: 0, medium: 0, low: 0, none: 0 });
+    expect(q.scorecard).toBeNull();
+    expect(await getQualitySummary(db)).toEqual({
+      totalContracts: 0,
+      scoredContracts: 0,
+      avgOverall: null,
+      meanCoverage: null,
+    });
   });
 });
