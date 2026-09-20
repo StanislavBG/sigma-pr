@@ -3806,6 +3806,8 @@ a.pa-card-cpv:focus-visible {
   .ov-cpv-foot {
     display: none;
   }
+}
+
 /* Company tie graph. A different graph from `.network-svg`: there the edge is a money flow
    between an authority and a winner, here it is a RELATIONSHIP between two companies, so the edge — not
    the node — carries the meaning and needs to be told apart at a glance. */

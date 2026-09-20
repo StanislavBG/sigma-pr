@@ -34,3 +34,7 @@ export const CANONICAL_QUERY_PARAMS = new Set([
   'view', // /persons — the profile instead of the list of matching people
   'year',
 ]);
+
+// Read but deliberately not response-affecting: excluded from the cache key, still kept in links. None
+// today; declared so a future one isn't silently absent.
+export const INTENTIONALLY_UNKEYED = new Set<string>([]);
