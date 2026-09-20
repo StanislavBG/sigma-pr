@@ -31,6 +31,21 @@ describe('overrunBarGeometry', () => {
   });
 });
 
+describe('overrunBarGeometry — degenerate scale', () => {
+  it('draws a zero-length bar when the corpus scale max is not positive, keeping the split honest', () => {
+    expect(overrunBarGeometry(1_000, 4_000, 0)).toEqual({
+      signPct: 25,
+      incPct: 75,
+      nowScalePct: 0,
+    });
+    expect(overrunBarGeometry(1_000, 4_000, -5).nowScalePct).toBe(0);
+  });
+
+  it('caps the bar at the full track when current exceeds the scale max', () => {
+    expect(overrunBarGeometry(1_000, 4_000, 2_000).nowScalePct).toBe(100);
+  });
+});
+
 describe('formatGrowthFactor', () => {
   it('renders a pct ratio as a Bulgarian-formatted multiple of the signed value', () => {
     expect(formatGrowthFactor(2.1)).toBe('3,1× (+210%)');
@@ -117,5 +132,45 @@ describe('scatterGeometry', () => {
       expect(t.pctPercent).toBeGreaterThanOrEqual(30);
       expect(t.pctPercent).toBeLessThanOrEqual(30);
     }
+  });
+});
+
+describe('scatterGeometry — x-axis tick selection', () => {
+  const at = (pct: number): ScatterDatum => ({
+    id: `p${pct}`,
+    pct,
+    deltaEur: 1_000,
+    annexCount: 1,
+    rank: 1,
+  });
+  const ticksFor = (...pcts: number[]) =>
+    scatterGeometry(pcts.map(at)).xticks.map((t) => t.pctPercent);
+
+  it('keeps every ladder stop when at most five fall inside the data range', () => {
+    // 20%..600% spans the 25/50/100/250/500 stops — exactly the cap, so none are dropped.
+    expect(ticksFor(0.2, 6)).toEqual([25, 50, 100, 250, 500]);
+  });
+
+  it('never labels a tick outside the range the data actually spans', () => {
+    // A lone point has no two ladder stops in range; the bracketing stops (100 / 250) are clamped
+    // back onto the value so the axis cannot show a growth figure absent from the data.
+    expect(ticksFor(1.2).every((t) => t === 120)).toBe(true);
+  });
+
+  it('collapses to one tick when the value sits exactly on a ladder stop, without dividing by zero', () => {
+    const g = scatterGeometry([at(1)]); // +100% exactly
+    expect(g.xticks.map((t) => t.pctPercent)).toEqual([100]);
+    expect(Number.isFinite(g.points[0]!.x)).toBe(true);
+    expect(Number.isFinite(g.xticks[0]!.x)).toBe(true);
+  });
+
+  it('labels growth below the plotted floor at the floor, not at the first ladder stop', () => {
+    // The x-axis floor is 5%, under the first ladder stop (10%) → the lower bracket falls back to 10
+    // and is then clamped to the data range.
+    expect(ticksFor(0.01)).toEqual([5]);
+  });
+
+  it('labels growth beyond the ladder at the data value, not at the last ladder stop', () => {
+    expect(ticksFor(1_000)).toEqual([100_000]);
   });
 });

@@ -585,3 +585,127 @@ describe('getOverrunsHeadline', () => {
     expect(h).toEqual({ totalOverrunEur: 0, medianPct: 0 });
   });
 });
+
+// ── limits, missing aggregate rows and amendment edge cases ─────────────────────────────────────
+// Every LIMIT the page binds is caller-influenced, so out-of-range values must fall back to the
+// default (never widen the scan past MAX_LIMIT, never bind 0/negative/fractional).
+function limitProbe(): { db: D1Database; boundLimits: () => unknown[] } {
+  const calls: { sql: string; binds: unknown[] }[] = [];
+  const { db } = fakeD1(
+    [
+      {
+        when: [],
+        all: (call) => {
+          calls.push({ sql: call.sql, binds: call.binds });
+          return [];
+        },
+        first: null,
+      },
+    ],
+    { onUnmatched: 'empty' },
+  );
+  return { db, boundLimits: () => calls.filter((c) => c.binds.length).map((c) => c.binds[0]) };
+}
+
+describe('getTopOverruns — limit handling and empty aggregates', () => {
+  it.each([
+    [undefined, 50],
+    [10, 10],
+    [200, 200],
+    [201, 50],
+    [0, 50],
+    [-3, 50],
+    [2.5, 50],
+  ])('binds limit %s as %s', async (limit, expected) => {
+    const { db, boundLimits } = limitProbe();
+    await getTopOverruns(db, { by: 'absolute', limit });
+    expect(boundLimits()).toEqual([expected]);
+  });
+
+  it('reports zero totals when the corpus aggregate row is missing', async () => {
+    const { db } = limitProbe();
+    expect(await getTopOverruns(db, { by: 'percent' })).toEqual({
+      rows: [],
+      totalOverrunEur: 0,
+      count: 0,
+    });
+  });
+});
+
+describe('getOverrunsAnalytics — limits and empty aggregates', () => {
+  it('falls back to each section default when limits are out of range, and honours valid ones', async () => {
+    const bad = limitProbe();
+    await getOverrunsAnalytics(bad.db, {
+      by: 'absolute',
+      leaderboardLimit: 0,
+      authorityLimit: 999,
+      sectorLimit: 1.5,
+    });
+    // Board default 50, authority default 20; the sector GROUP BY carries no bound LIMIT.
+    expect(bad.boundLimits()).toEqual([50, 20]);
+
+    const good = limitProbe();
+    await getOverrunsAnalytics(good.db, {
+      by: 'absolute',
+      leaderboardLimit: 5,
+      authorityLimit: 7,
+      sectorLimit: 3,
+    });
+    expect(good.boundLimits()).toEqual([5, 7]);
+  });
+
+  it('caps the sector list at the requested sectorLimit, keeping the largest by risk', async () => {
+    const { db } = fakeAnalyticsDb({
+      sector: [
+        { sector_key: '45', risk_eur: 1_000, signing_eur: 4_000, count: 1 },
+        { sector_key: '72', risk_eur: 9_000, signing_eur: 10_000, count: 2 },
+        { sector_key: '33', risk_eur: 5_000, signing_eur: 10_000, count: 3 },
+      ],
+    });
+    const { bySector } = await getOverrunsAnalytics(db, { by: 'absolute', sectorLimit: 2 });
+    expect(bySector.map((s) => s.code)).toEqual(['72', '33']);
+  });
+
+  it('guards sector growth against a zero signing denominator', async () => {
+    const { db } = fakeAnalyticsDb({
+      sector: [{ sector_key: '45', risk_eur: 1_000, signing_eur: 0, count: 1 }],
+    });
+    const { bySector } = await getOverrunsAnalytics(db, { by: 'absolute' });
+    expect(bySector[0]!.growth).toBe(0);
+  });
+
+  it('zeroes the corpus summary when the aggregate and median rows are missing', async () => {
+    const { db } = limitProbe();
+    const { corpus } = await getOverrunsAnalytics(db, { by: 'absolute' });
+    expect(corpus).toMatchObject({
+      totalOverrunEur: 0,
+      count: 0,
+      avgPct: 0,
+      medianPct: 0,
+      corpusSigningEur: 0,
+      shareOfSigning: 0,
+    });
+  });
+});
+
+describe('getOverrunAnnexes — missing fields', () => {
+  it('assumes BGN for a NULL currency and keeps an undated, reason-less amendment honest', async () => {
+    const { db } = fakeAnnexDb([
+      annexRaw({ currency: null, published_at: null, description: null, value_delta: 195.583 }),
+    ]);
+    const [a] = await getOverrunAnnexes(db, ['c:123']);
+    expect(a!.date).toBeNull();
+    expect(a!.reason).toBeNull();
+    expect(a!.deltaEur).toBeCloseTo(100, 6); // ÷ the fixed peg, not passed through as EUR
+  });
+
+  it('returns null figures when the amendment carries no values at all', async () => {
+    const { db } = fakeAnnexDb([
+      annexRaw({ value_before: null, value_after: null, value_delta: null }),
+    ]);
+    const [a] = await getOverrunAnnexes(db, ['c:123']);
+    expect(a!.valueBeforeEur).toBeNull();
+    expect(a!.valueAfterEur).toBeNull();
+    expect(a!.deltaEur).toBeNull();
+  });
+});

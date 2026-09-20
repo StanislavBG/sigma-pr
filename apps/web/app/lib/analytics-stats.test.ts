@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TrendPoint } from '@sigma/api-contract';
 import {
   estimateYoyGrowth,
@@ -59,6 +59,21 @@ describe('peakPoint / formatPeakMonth', () => {
     expect(formatPeakMonth('2025-12')).toBe('дек 2025');
     expect(formatPeakMonth('2024-01')).toBe('яну 2024');
     expect(formatPeakMonth(null)).toBe('—');
+  });
+  it('passes an unparseable period through verbatim rather than inventing a month', () => {
+    expect(formatPeakMonth('2025')).toBe('2025');
+    expect(formatPeakMonth('2025-Q4')).toBe('2025-Q4');
+    expect(formatPeakMonth('')).toBe('—');
+  });
+  it('falls back to the raw month number when it is outside 01–12', () => {
+    expect(formatPeakMonth('2025-13')).toBe('13 2025');
+  });
+  it('keeps the first of two equal-valued periods as the peak', () => {
+    const tie: PeakablePoint[] = [
+      { period: '2025-03', valueEur: 500 },
+      { period: '2025-04', valueEur: 500 },
+    ];
+    expect(peakPoint(tie)?.period).toBe('2025-03');
   });
 });
 
@@ -227,5 +242,34 @@ describe('estimateYoyGrowth', () => {
     const g = estimateYoyGrowth(points);
     expect(g.value).toBeCloseTo(1.3, 5);
     expect(g.count).toBeCloseTo(1.1, 5);
+  });
+
+  it('reports a neutral count factor when no year has a positive count to divide by', () => {
+    // Value grows +20%/yr but every month carries zero contracts → no valid count ratio exists.
+    const points = [...year(2021, 100, 0), ...year(2022, 120, 0), ...year(2023, 144, 0)];
+    const g = estimateYoyGrowth(points);
+    expect(g.value).toBeCloseTo(1.2, 5);
+    expect(g.count).toBe(1);
+    expect(g.insufficient).toBe(false);
+  });
+
+  it('treats a collapse of the contract count to zero as noise (neutral 1), not as a −100% trend', () => {
+    const points = [...year(2021, 100, 50), ...year(2022, 120, 0)];
+    const g = estimateYoyGrowth(points);
+    expect(g.value).toBeCloseTo(1.2, 5);
+    expect(g.count).toBe(1);
+  });
+
+  it('counts a dropped malformed row in the diagnostic warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    estimateYoyGrowth([
+      ...year(2021, 100, 50),
+      ...year(2022, 120, 55),
+      { period: '', valueEur: 1, contracts: 1, partial: false },
+      { period: '2026-W12', valueEur: 1, contracts: 1, partial: false },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('skipped 2 point(s)');
+    warn.mockRestore();
   });
 });
