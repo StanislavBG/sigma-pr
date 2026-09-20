@@ -5,9 +5,11 @@
 // `wrangler deploy` needs the real IDs — this script substitutes them from env vars and
 // writes a sibling `wrangler.deploy.<ext>` that the package `deploy` script passes via
 // `--config`. Optional deploy-time name env vars (`SIGMA_WEB_NAME`, `SIGMA_ETL_NAME`,
-// `SIGMA_WORKFLOW_NAME`, `SIGMA_D1_NAME`, `SIGMA_CSV_CACHE_NAME`, `SIGMA_REPORTS_NAME`,
-// `SIGMA_VECTORIZE_NAME`) explicitly override resource names for alternate environments while
-// leaving committed names unchanged when unset.
+// `SIGMA_WORKFLOW_NAME`, `SIGMA_REGISTRY_WORKFLOW_NAME`, `SIGMA_DECLARATIONS_WORKFLOW_NAME`,
+// `SIGMA_REBUILD_WORKFLOW_NAME`,
+// `SIGMA_DECLARATIONS_BUCKET`, `SIGMA_SHIP_ENV`, `SIGMA_D1_NAME`,
+// `SIGMA_CSV_CACHE_NAME`, `SIGMA_REPORTS_NAME`, `SIGMA_VECTORIZE_NAME`) explicitly override
+// resource names for alternate environments while leaving committed names unchanged when unset.
 //
 // usage: node scripts/wrangler-render.mjs <path/to/wrangler.toml|jsonc>
 
@@ -86,9 +88,17 @@ if (ext === '.json' || ext === '.jsonc') {
   const names = {
     etlName: process.env.SIGMA_ETL_NAME || '',
     workflowName: process.env.SIGMA_WORKFLOW_NAME || '',
+    registryWorkflowName: process.env.SIGMA_REGISTRY_WORKFLOW_NAME || '',
+    declarationsWorkflowName: process.env.SIGMA_DECLARATIONS_WORKFLOW_NAME || '',
+    rebuildWorkflowName: process.env.SIGMA_REBUILD_WORKFLOW_NAME || '',
+    declarationsBucket: process.env.SIGMA_DECLARATIONS_BUCKET || '',
+    shipEnv: process.env.SIGMA_SHIP_ENV || '',
     d1Name: process.env.SIGMA_D1_NAME || '',
   };
-  if (names.etlName || names.workflowName || names.d1Name) {
+  // Every name that renderToml can substitute has to open the gate. Listing only the older four made
+  // this fail OPEN: a config that sets just the newer ones skipped the rendering without a word, and the
+  // deploy went out carrying the committed PRODUCTION names.
+  if (Object.values(names).some(Boolean)) {
     out = renderToml(out, names);
   }
 }
@@ -161,16 +171,46 @@ function stripJsonLineComments(text) {
 
 function renderToml(text, names) {
   let section = '';
+  let workflowBinding = '';
+  let bucketBinding = '';
   return text
     .split('\n')
     .map((line) => {
       const sectionMatch = line.match(/^\s*(\[\[?[^\]]+\]?\])\s*$/);
-      if (sectionMatch) section = sectionMatch[1];
+      if (sectionMatch) {
+        section = sectionMatch[1];
+        workflowBinding = '';
+        bucketBinding = '';
+      }
+
+      const bindingMatch = line.match(/^\s*binding\s*=\s*"([^"]+)"/);
+      if (bindingMatch && section === '[[workflows]]') workflowBinding = bindingMatch[1];
+      if (bindingMatch && section === '[[r2_buckets]]') bucketBinding = bindingMatch[1];
 
       if (section === '' && names.etlName) {
         line = replaceTomlStringValue(line, 'name', names.etlName);
-      } else if (section === '[[workflows]]' && names.workflowName) {
-        line = replaceTomlStringValue(line, 'name', names.workflowName);
+      } else if (section === '[[workflows]]') {
+        const workflowName =
+          {
+            REGISTRY: names.registryWorkflowName,
+            DECLARATIONS_RUN: names.declarationsWorkflowName,
+            REBUILD_RUN: names.rebuildWorkflowName,
+          }[workflowBinding] ?? names.workflowName;
+        if (workflowName) line = replaceTomlStringValue(line, 'name', workflowName);
+      } else if (
+        section === '[[r2_buckets]]' &&
+        names.declarationsBucket &&
+        // By BINDING, as the JSONC path already does: renaming every bucket in the file would hand the
+        // declarations name to the next bucket this config gains.
+        bucketBinding === 'DECLARATIONS_CORPUS'
+      ) {
+        line = replaceTomlStringValue(line, 'bucket_name', names.declarationsBucket);
+      } else if (section === '[vars]') {
+        // The declarations container reads its target from these vars (ADR-0045).
+        if (names.d1Name) line = replaceTomlStringValue(line, 'SIGMA_D1_NAME', names.d1Name);
+        if (names.shipEnv) line = replaceTomlStringValue(line, 'SIGMA_SHIP_ENV', names.shipEnv);
+        if (names.declarationsBucket)
+          line = replaceTomlStringValue(line, 'DECLARATIONS_BUCKET', names.declarationsBucket);
       }
       if (names.d1Name) line = replaceTomlStringValue(line, 'database_name', names.d1Name);
       return line;

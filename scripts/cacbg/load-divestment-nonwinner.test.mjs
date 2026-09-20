@@ -14,13 +14,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { seedVerdicts, readFixtureDeed } from './tr-fixture.mjs';
+import { seedVerdicts, fixtureRegistry, sealFixtureFilings } from './tr-fixture.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
 let dir, DB, STAGING, TR_DB, TR_RAW;
 
 function runLoad() {
+  sealFixtureFilings(STAGING);
   execFileSync(
     'node',
     ['--import', path.join(HERE, 'register-ts.mjs'), path.join(HERE, 'load.mjs')],
@@ -39,74 +40,27 @@ function runLoad() {
 }
 
 /**
- * Minimal Trade Register evidence for this fixture (#279, ADR-0033). Publishing now rests on a registry
- * fact, so a loader test without a cache would only ever exercise the fail-closed path. Each winner's
- * deed names its own declarant as съдружник — the „Документ" rung.
+ * Minimal Trade Register evidence for this fixture (#279, ADR-0033). Publishing rests on a registry fact,
+ * so a loader test without verdicts would only ever exercise the fail-closed path. Each winner's registry
+ * facts name its own declarant as съдружник — the „Документ" rung.
  */
 function buildTrCache(owners) {
-  fs.mkdirSync(TR_RAW, { recursive: true });
-  const cache = new DatabaseSync(TR_DB);
-  cache.exec(`CREATE TABLE IF NOT EXISTS deeds (
-    eik TEXT PRIMARY KEY, status TEXT NOT NULL, http_status INTEGER, fetched_at TEXT NOT NULL,
-    raw_path TEXT, body_sha256 TEXT, legal_form_code INTEGER, legal_form_verdict TEXT,
-    seat_normalized TEXT, seat_entry_date TEXT, latest_own_entry_date TEXT,
-    attempts INTEGER NOT NULL DEFAULT 1, outside_reason TEXT)`);
-  for (const [eik, names] of Object.entries(owners)) {
-    const html = []
-      .concat(names)
-      .map((n) => `<div class='record-container'><p class='field-text'>${n}</p></div>`)
-      .join(`<hr class='hr--report' />`);
-    const deed = {
-      uic: eik,
-      fullName: '"ФИКС" ЕООД',
-      legalForm: 4,
-      sections: [
-        {
-          subDeeds: [
-            {
-              groups: [
-                {
-                  fields: [
-                    {
-                      nameCode: 'CR_F_19_L',
-                      htmlData: html,
-                      fieldEntryNumber: '20110502101007',
-                      fieldEntryDate: '2011-05-02T00:00:00',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    };
-    fs.writeFileSync(path.join(TR_RAW, `${eik}.json`), JSON.stringify(deed));
-    cache
-      .prepare(
-        'INSERT OR REPLACE INTO deeds(eik,status,http_status,fetched_at,raw_path,legal_form_code,legal_form_verdict,latest_own_entry_date) VALUES(?,?,?,?,?,?,?,?)',
-      )
-      .run(
-        eik,
-        'fetched',
-        200,
-        '2026-08-05T00:00:00Z',
-        `${eik}.json`,
-        4,
-        'closely_held',
-        '2011-05-02',
-      );
-  }
-  cache.close();
-
-  // The deeds alone decide nothing since ADR-0037: the verdict is reached by the crawler and the
-  // loader only reads it. Run the REAL decision over these fixture deeds so this test keeps
-  // exercising the evidence ladder rather than a hand-written verdict row.
   seedVerdicts({
     workDb: DB,
     staging: STAGING,
     trDb: TR_DB,
-    deedFor: (eik) => readFixtureDeed(TR_RAW, eik),
+    registryFor: (eik) =>
+      eik in owners
+        ? {
+            registry: fixtureRegistry(eik, {
+              owners: [].concat(owners[eik].now ?? owners[eik]),
+              pastOwners: owners[eik].past ?? [],
+              seat: 'София',
+              form: 4,
+              suffix: 'ЕООД',
+            }),
+          }
+        : null,
   });
 }
 
@@ -122,15 +76,15 @@ before(() => {
 
   const db = new DatabaseSync(DB);
   db.exec(`
-    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT);
+    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT, ownership_kind TEXT);
     CREATE TABLE authorities(id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE tenders(id TEXT PRIMARY KEY, authority_id TEXT);
     CREATE TABLE contracts(id TEXT PRIMARY KEY, tender_id TEXT, bidder_id TEXT, signed_at TEXT, amount_eur REAL);
     INSERT INTO authorities VALUES ('auth:1','ВЕДОМСТВО ТЕСТ');
     INSERT INTO tenders VALUES ('t1','auth:1'),('t2','auth:1');
     -- Two distinctive single-ЕИК winners (number token + matching seat → published, no ambiguity).
-    INSERT INTO bidders VALUES ('eik:100000001','ДИВ ТЕХ 5 ЕООД','100000001',1,'София');
-    INSERT INTO bidders VALUES ('eik:200000002','ДРУГ ВИН 6 ЕООД','200000002',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:100000001','ДИВ ТЕХ 5 ЕООД','100000001',1,'София');
+    INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES ('eik:200000002','ДРУГ ВИН 6 ЕООД','200000002',1,'София');
     INSERT INTO contracts VALUES ('c1','t1','eik:100000001','2019-05-01',50000);
     INSERT INTO contracts VALUES ('c2','t2','eik:200000002','2019-06-01',60000);
   `);
@@ -200,17 +154,19 @@ before(() => {
   buildTrCache({
     // Диан DIVESTED, so the live deed must name somebody else — otherwise §7's reconciliation
     // correctly overturns his declared termination and the case stops testing what it is for.
-    100000001: 'НОВ ИВАНОВ СОБСТВЕНИК',
+    100000001: { now: 'НОВ ИВАНОВ СОБСТВЕНИК', past: ['ДИАН ИВАНОВ ДИВЕСТОВ'] },
     200000002: 'ВЕРЕН ИВАНОВ ДЪРЖАТЕЛЕВ',
   });
   // filings.jsonl — one record per declaration (as extract.mjs emits it), carrying the declaration type. The
   // divest horizon is built from this: Диан's 2022 assets declaration (listing only the non-winner) advances
   // his assets horizon to 2022 → the 2019 ДИВ ТЕХ 5 winner stake is withdrawn. Верен has only a 2019 filing.
   const filings = holdings.map((h) => ({
+    sourceHash: 'a'.repeat(64),
     folder: h.folder,
     xmlFile: h.xmlFile,
     year: h.year,
     template: h.template,
+    declarationType: 'Annualy',
     person: h.person,
     institution: h.institution,
   }));
@@ -222,7 +178,7 @@ before(() => {
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-test('a later NON-winner ownership filing still withdraws a divested winner stake (E11 horizon)', () => {
+test('a later non-winner filing dates proven history without withdrawing it', () => {
   runLoad();
   const db = open();
   const link = (eik, person) =>
@@ -235,9 +191,17 @@ test('a later NON-winner ownership filing still withdraws a divested winner stak
   const dian = link('100000001', 'Диан Иванов Дивестов');
   const veren = link('200000002', 'Верен Иванов Държателев');
 
-  // The divested winner stake is dated to its last declaration and excluded from the public surface.
-  assert.equal(dian.status, 'withdrawn');
+  // The register shows Диан as a past owner, which establishes the company. A later omission
+  // does not invalidate the earlier ownership observation or extend its period.
+  assert.equal(dian.status, 'published');
   assert.equal(dian.last_declared_year, '2019');
+  assert.equal(
+    db
+      .prepare('SELECT later_declaration_year FROM interest_link_history WHERE link_key=?')
+      .get(dian.link_key).later_declaration_year,
+    '2022',
+  );
   // The control stake — no later filing to contradict it — remains current. (Guards against over-withdrawal.)
   assert.equal(veren.status, 'published');
+  db.close();
 });
