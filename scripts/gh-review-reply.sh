@@ -25,7 +25,7 @@ if [ "$1" = "--resolve" ]; then
   [ $# -eq 2 ] || usage
   gh api graphql \
     -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
-    -F id="$2"
+    -f id="$2"
   echo "RESOLVED $2"
   exit 0
 fi
@@ -50,6 +50,6 @@ fi
 
 gh api graphql \
   -f query='mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id, body:$body}){comment{id}}}' \
-  -F id="$thread_id" \
+  -f id="$thread_id" \
   -F body=@"$body_file"
 echo "REPLIED $thread_id"
