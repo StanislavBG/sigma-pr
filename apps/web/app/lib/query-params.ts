@@ -16,7 +16,6 @@ export const CANONICAL_QUERY_PARAMS = new Set([
   'cursor',
   'eu',
   'funding',
-  'g', // /trends: retired granularity param (#197 back-compat); still response-affecting when `step` is absent
   'institution', // /conflicts — the official's institution
   'kind',
   'p',
