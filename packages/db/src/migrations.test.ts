@@ -18,14 +18,21 @@ const migration6 = resolve(root, 'packages/db/migrations/0006_amendment_restated
 const migration7 = resolve(root, 'packages/db/migrations/0007_amendment_value_suspect.sql');
 const migration8 = resolve(root, 'packages/db/migrations/0008_amendment_provenance.sql');
 const migration9 = resolve(root, 'packages/db/migrations/0009_interest_link_evidence.sql');
+// The officials search rows read person_registry_links (0014), interest_link_observations (0015) and
+// person_sources (0018).
+const personMigrationPaths = [
+  'packages/db/migrations/0014_person_profile.sql',
+  'packages/db/migrations/0015_person_observations.sql',
+  'packages/db/migrations/0018_person_entities.sql',
+].map((p) => resolve(root, p));
 const migration10 = resolve(root, 'packages/db/migrations/0010_publishing_gate_constraints.sql');
-const migration11 = resolve(root, 'packages/db/migrations/0011_contracts_overrun_index.sql');
+const migration11 = resolve(root, 'packages/db/migrations/0023_contracts_overrun_index.sql');
 const backfill = resolve(root, 'scripts/backfill-current-value-currency.sql');
 const precompute = resolve(root, 'scripts/precompute.sql');
 
 // Every migration file the served chain must contain, in apply order. A stray or misnumbered file
-// (e.g. two branches both claiming 0011) fails this before it ever reaches `wrangler d1 migrations
-// apply` — see the fleet-wide 0011_contracts_overrun_index.sql renumber note in AGENTS.md history.
+// (e.g. two branches both claiming 0023) fails this before it ever reaches `wrangler d1 migrations
+// apply`.
 const EXPECTED_MIGRATION_FILES = [
   '0000_init.sql',
   '0001_flow_pairs_bidder_index.sql',
@@ -38,7 +45,19 @@ const EXPECTED_MIGRATION_FILES = [
   '0008_amendment_provenance.sql',
   '0009_interest_link_evidence.sql',
   '0010_publishing_gate_constraints.sql',
-  '0011_contracts_overrun_index.sql',
+  '0011_company_links.sql',
+  '0012_person_redirects.sql',
+  '0013_registry.sql',
+  '0014_person_profile.sql',
+  '0015_person_observations.sql',
+  '0016_registry_entry_sync.sql',
+  '0017_registry_identity_observations.sql',
+  '0018_person_entities.sql',
+  '0019_registry_scoped_birthdates.sql',
+  '0020_registry_company_history.sql',
+  '0021_registry_entry_baseline.sql',
+  '0022_person_relatives.sql',
+  '0023_contracts_overrun_index.sql',
 ];
 
 describe('migration file inventory', () => {
@@ -195,6 +214,7 @@ describe('served migrations', () => {
       readScript(dbPath, migration2);
       readScript(dbPath, migration3);
       readScript(dbPath, migration9);
+      for (const path of personMigrationPaths) readScript(dbPath, path);
       readScript(dbPath, backfill);
       readScript(dbPath, precompute);
 

@@ -5,7 +5,7 @@ const { companyNameKey } = await import('../../packages/shared/src/company-name-
 
 test('companyCandidates pulls „NAME" ФОРМА out of prose', () => {
   assert.deepEqual(companyCandidates('"ТРАНСПОМЕД" ЕООД, ЕИК 101677351'), ['"ТРАНСПОМЕД" ЕООД']);
-  assert.deepEqual(companyCandidates('"Кристална вода" АД София'), ['"Кристална вода" АД']);
+  assert.deepEqual(companyCandidates('"Бистра вода" АД София'), ['"Бистра вода" АД']);
   // prose sentence with the real company buried
   assert.ok(
     companyCandidates('2 дружествени дяла на „ЕН-ФРЕШ" ООД, прехвърлени нотариално').some((c) =>
@@ -55,4 +55,15 @@ test('declared_eik name-confirm is boundary-safe: an embedded winner name does N
   assert.equal(confirms('МЕГАСТРОЙ 15 ООД'), true);
   // Documents the removed bug: the old `companyNameKey(text).includes(winnerKey)` leg WOULD have confirmed it.
   assert.equal(companyNameKey(entity).includes(companyNameKey('СТРОЙ 1')), true);
+});
+
+test('inner quotes retain distinguishing prefixes and quoted names in prose still resolve', () => {
+  assert.deepEqual(companyCandidates('ГД "Река" ЕООД'), ['ГД "Река" ЕООД']);
+  assert.deepEqual(companyCandidates('АБ 12 „Река“ ООД, София'), ['АБ 12 „Река“ ООД']);
+  assert.deepEqual(companyCandidates('2 дружествени дяла на „ЕН-ФРЕШ" ООД, прехвърлени'), [
+    '„ЕН-ФРЕШ" ООД',
+  ]);
+  assert.deepEqual(companyCandidates('дял в „МЕГАСТРОЙ 15" ООД, ЕИК 100000008'), [
+    '„МЕГАСТРОЙ 15" ООД',
+  ]);
 });

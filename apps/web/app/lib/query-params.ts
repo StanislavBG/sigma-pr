@@ -8,17 +8,20 @@ export const CANONICAL_QUERY_PARAMS = new Set([
   'a', // /compare — entity A slug
   'authority',
   'b', // /compare — entity B slug
+  'basis', // evidence basis in the unified person contract list
   'bidder',
   'bids', // single-bid filter — changes the result set + totals
   'by', // /overruns — sort dimension (absolute | percent)
   'center',
   'cohort', // /price-anomaly — selected CPV cohorts (repeatable); faceting changes the result set
+  'company', // person profile company filter
   'count',
   'cpv', // /contracts — exact 5-digit CPV filter; changes the result set + headline totals
   'cursor',
   'eu',
   'funding',
   'g',
+  'institution', // /conflicts — the official's institution
   'kind',
   'metric', // /compare leaderboard dimension
   'p',
@@ -26,10 +29,13 @@ export const CANONICAL_QUERY_PARAMS = new Set([
   'procedure',
   'q',
   'sector',
+  'signal', // /conflicts — own institution / in the declared window
   'sort',
+  'stake', // /conflicts — own stake vs a relative's
   'top', // top-20 vs top-50 on /flows, /competition
   'type',
   'value',
+  'view', // /persons — the profile instead of the list of matching people
   'year',
 ]);
 
