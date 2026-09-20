@@ -1,21 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import {
-  assertShipFloor,
   assertD1TargetAuthorized,
   SHIP_TARGETS,
-  parseMinLinks,
   resolveD1Name,
   insertStatements,
   chunkStatements,
   runShip,
+  schemaFromRows,
   assertShippedCounts,
   readCountsWithRetry,
   readShippedCounts,
+  chunkTables,
+  READBACK_MAX_TABLES,
   sqlLiteral,
   sqlIdent,
   TABLES,
   WIPE_ORDER,
+  stagedDropSql,
+  swapSql,
+  ShipYield,
 } from './ship-related-persons.mjs';
 
 test('sqlLiteral escapes quotes, strips NUL, and NULLs non-finite/absent', () => {
@@ -169,26 +174,6 @@ test('assertD1TargetAuthorized: declared env + allowlisted name + (name↔id) be
   assert.ok(SHIP_TARGETS.production.includes('sigma-blue'));
   assert.ok(SHIP_TARGETS.production.includes('sigma-green'));
   assert.ok(!SHIP_TARGETS.production.includes('sigma')); // there is no slot named `sigma` (#226)
-});
-
-test('assertShipFloor refuses to wipe the live surface below the floor (empty/partial staging)', () => {
-  assert.throws(() => assertShipFloor(0, 50), /refusing to ship: 0 published links/); // the empty-wipe case
-  assert.throws(() => assertShipFloor(49, 50), /< floor 50/);
-  assert.doesNotThrow(() => assertShipFloor(50, 50)); // exactly at the floor is allowed
-  assert.doesNotThrow(() => assertShipFloor(256, 50)); // healthy count
-  assert.doesNotThrow(() => assertShipFloor(3, 3)); // an intentional small set via --min-links=3
-  assert.throws(() => assertShipFloor(2, 3)); // …but one below it still refuses
-});
-
-test('parseMinLinks rejects the valueless-flag footgun and non-positive-integers', () => {
-  // the footgun: a bare `--min-links` → arg() returns `true` → Number(true)=1 collapses the floor 50→1
-  assert.throws(() => parseMinLinks(true), /requires a value/);
-  assert.throws(() => parseMinLinks('abc'), /positive integer/); // non-numeric
-  assert.throws(() => parseMinLinks('0'), /positive integer/); // zero disables the floor
-  assert.throws(() => parseMinLinks('-5'), /positive integer/);
-  assert.throws(() => parseMinLinks('2.5'), /positive integer/); // non-integer
-  assert.equal(parseMinLinks(50), 50); // default (flag absent) passes through
-  assert.equal(parseMinLinks('25'), 25); // --min-links=25
 });
 
 test('resolveD1Name refuses the prod default on a remote ship but keeps it for --local', () => {
@@ -415,6 +400,254 @@ test('readShippedCounts inherits the default 4-attempt budget', () => {
   assert.equal(calls, 4);
 });
 
+// ── the readback must fit the LOCAL engine's compound-SELECT cap ────────────────────────────────────
+// The six shipped tables went out as one six-term UNION ALL. Remote D1 allows 500 terms; the local
+// runtime (workerd) allows 5 — measured: 5 answer, 6 return `too many terms in compound SELECT`. So a
+// local ship read back as „target has no answer" for every table, over data that had just shipped, and
+// the run died before the reindex. These pin the split that keeps every query under the cap.
+const SHIP_TABLES = [
+  'persons',
+  'declarations',
+  'declared_interests',
+  'interest_links',
+  'interest_link_evidence',
+  'interest_link_authorities',
+];
+const SHIP_EXPECTED = Object.fromEntries(SHIP_TABLES.map((t, i) => [t, i + 1]));
+
+test('chunkTables never emits a group wider than the cap, and loses no table', () => {
+  for (const n of [1, 4, 5, 6, 9]) {
+    const tables = SHIP_TABLES.concat(Array.from({ length: 9 }, (_, i) => `t${i}`)).slice(0, n);
+    const groups = chunkTables(tables);
+    assert.ok(
+      groups.every((g) => g.length <= READBACK_MAX_TABLES),
+      `a group exceeded ${READBACK_MAX_TABLES} for n=${n}`,
+    );
+    assert.deepEqual(groups.flat(), tables, `chunking dropped or reordered a table for n=${n}`);
+  }
+});
+
+test('readShippedCounts asks in chunks under the cap — never one six-table query', () => {
+  // The actual regression. A six-term readback is precisely what the local engine refuses.
+  const asked = [];
+  const readOnce = (group) => {
+    asked.push(group);
+    return Object.fromEntries(group.map((t) => [t, SHIP_EXPECTED[t]]));
+  };
+  const out = readShippedCounts('sigma', false, SHIP_EXPECTED, { readOnce, sleep: () => {} });
+  assert.ok(asked.length > 1, 'six tables must not be read in a single query');
+  assert.ok(
+    asked.every((g) => g.length <= READBACK_MAX_TABLES),
+    `a readback asked for more than ${READBACK_MAX_TABLES} tables at once`,
+  );
+  // Merged across chunks, the answer is still the whole picture — so the guard sees every table.
+  assert.deepEqual(out, SHIP_EXPECTED);
+  assert.deepEqual(
+    asked.flat(),
+    SHIP_TABLES,
+    'every shipped table must be asked about exactly once',
+  );
+});
+
+test('a chunk that never answers leaves ITS tables unanswered — the guard still fails closed', () => {
+  // Splitting must not soften the verdict: the tables in a dead chunk have to stay missing, so
+  // assertShippedCounts reports them rather than passing a partial ship.
+  const readOnce = (group) => {
+    if (group.includes('interest_link_evidence')) throw new Error('wrangler timeout');
+    return Object.fromEntries(group.map((t) => [t, SHIP_EXPECTED[t]]));
+  };
+  const out = readShippedCounts('sigma', false, SHIP_EXPECTED, {
+    readOnce,
+    sleep: () => {},
+    attempts: 2,
+  });
+  assert.equal(out.persons, 1, 'a healthy chunk must still report');
+  assert.ok(!('interest_link_evidence' in out), 'a dead chunk must not invent an answer');
+  assert.throws(
+    () => assertShippedCounts(SHIP_EXPECTED, out),
+    /interest_link_evidence: shipped 5, target has no answer/,
+  );
+});
+
+test('a REMOTE readback is chunked too — both engines cap compound SELECT at 5', () => {
+  // An earlier revision kept remote on one query, assuming only workerd capped compound SELECT. Measured
+  // against a staging database, the remote rejects six terms exactly like the local one — which is why
+  // the scheduled ship had been failing verification ever since the sixth table landed. Pinning this
+  // stops the „remote is different" assumption from coming back.
+  const asked = [];
+  const readOnce = (group) => {
+    asked.push(group);
+    return Object.fromEntries(group.map((t) => [t, SHIP_EXPECTED[t]]));
+  };
+  const out = readShippedCounts('sigma-stage-green', true, SHIP_EXPECTED, {
+    readOnce,
+    sleep: () => {},
+  });
+  assert.ok(
+    asked.length > 1,
+    'the remote path must split too — six terms are rejected there as well',
+  );
+  assert.ok(
+    asked.every((g) => g.length <= READBACK_MAX_TABLES),
+    `a remote readback asked for more than ${READBACK_MAX_TABLES} tables at once`,
+  );
+  assert.deepEqual(
+    asked.flat(),
+    SHIP_TABLES,
+    'every shipped table must be asked about exactly once',
+  );
+  assert.deepEqual(out, SHIP_EXPECTED);
+});
+
+test('a chunk cannot answer for a table outside its own group', () => {
+  // readCountsWithRetry checks the group but returns the reader's whole object. If a merge copied that
+  // wholesale, a reader answering beyond its group could pre-seed a count for a table whose own group
+  // later dies — and the guard would verify a table nobody actually read. Fail-closed must not depend
+  // on the reader being well-behaved.
+  const readOnce = (group) => {
+    if (group.includes('persons')) return SHIP_EXPECTED; // over-answers: every table, not just its own
+    throw new Error('wrangler timeout'); // ...and every later group dies
+  };
+  const out = readShippedCounts('sigma', false, SHIP_EXPECTED, {
+    readOnce,
+    sleep: () => {},
+    attempts: 2,
+  });
+  for (const t of SHIP_TABLES.slice(READBACK_MAX_TABLES)) {
+    assert.ok(!(t in out), `${t} was answered by another group's reader`);
+  }
+  assert.throws(() => assertShippedCounts(SHIP_EXPECTED, out), /target has no answer/);
+});
+
+test('an INHERITED count never stands in for one the target did not report', () => {
+  // The last hole in „fails closed unconditionally": both the completeness check and the merge used a
+  // bare lookup / `in`, which walk the prototype chain. With Object.prototype carrying the expected
+  // numbers, a group that exhausted to {} still „had" every count — and verification passed over a
+  // target that answered for nothing. Own properties only, in the reader, the merge AND the guard.
+  const polluted = [];
+  try {
+    for (const t of SHIP_TABLES) {
+      Object.defineProperty(Object.prototype, t, {
+        value: SHIP_EXPECTED[t],
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+      polluted.push(t);
+    }
+    const readOnce = () => {
+      throw new Error('wrangler timeout'); // every group dies; nothing is ever really read
+    };
+    const out = readShippedCounts('sigma', false, SHIP_EXPECTED, {
+      readOnce,
+      sleep: () => {},
+      attempts: 2,
+    });
+    for (const t of SHIP_TABLES) {
+      assert.ok(!Object.hasOwn(out, t), `${t} was fabricated from the prototype`);
+    }
+    assert.throws(
+      () => assertShippedCounts(SHIP_EXPECTED, out),
+      /target has no answer/,
+      'the guard must not read counts through a prototype either',
+    );
+  } finally {
+    for (const t of polluted) delete Object.prototype[t];
+  }
+});
+
+test('an INHERITED count is not a complete answer — the reader must own what it reports', () => {
+  // Covers the completeness check specifically (the test above only exercises the merge, because its
+  // reader always throws). Here the reader RETURNS an object whose counts live on the prototype: `in`
+  // and a bare lookup would call that a complete answer and hand it straight back.
+  const polluted = [];
+  try {
+    for (const t of SHIP_TABLES) {
+      Object.defineProperty(Object.prototype, t, {
+        value: SHIP_EXPECTED[t],
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+      polluted.push(t);
+    }
+    // ONE chunk's worth of tables, deliberately: with two chunks the reader is called twice anyway and
+    // a call count could not tell „retried" apart from „second group".
+    const oneChunk = Object.fromEntries(
+      SHIP_TABLES.slice(0, READBACK_MAX_TABLES).map((t) => [t, SHIP_EXPECTED[t]]),
+    );
+    let calls = 0;
+    const readOnce = () => {
+      calls += 1;
+      return {}; // owns nothing; every expected key is only inherited
+    };
+    const out = readShippedCounts('sigma', false, oneChunk, {
+      readOnce,
+      sleep: () => {},
+      attempts: 3,
+    });
+    assert.equal(calls, 3, 'an answer owning nothing must be retried to exhaustion, not accepted');
+    for (const t of Object.keys(oneChunk)) {
+      assert.ok(!Object.hasOwn(out, t), `${t} came from the prototype`);
+    }
+    assert.throws(() => assertShippedCounts(oneChunk, out), /target has no answer/);
+  } finally {
+    for (const t of polluted) delete Object.prototype[t];
+  }
+});
+
+test('a polluted prototype SETTER cannot seed counts for a chunk that never answered', () => {
+  // The accumulator itself was the last hole: `counts[t] = …` invokes an inherited setter, so writing a
+  // healthy chunk's count could define own values for tables in a chunk that later died.
+  const victim = SHIP_TABLES[SHIP_TABLES.length - 1];
+  let installed = false;
+  try {
+    Object.defineProperty(Object.prototype, SHIP_TABLES[0], {
+      configurable: true,
+      enumerable: false,
+      set(v) {
+        // A healthy write smuggles in a count for a table nobody read.
+        Object.defineProperty(this, victim, {
+          value: SHIP_EXPECTED[victim],
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+        Object.defineProperty(this, SHIP_TABLES[0], {
+          value: v,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      },
+      get() {
+        return undefined;
+      },
+    });
+    installed = true;
+    const readOnce = (group) => {
+      if (group.includes(victim)) throw new Error('wrangler timeout');
+      return Object.fromEntries(group.map((t) => [t, SHIP_EXPECTED[t]]));
+    };
+    const out = readShippedCounts('sigma', false, SHIP_EXPECTED, {
+      readOnce,
+      sleep: () => {},
+      attempts: 2,
+    });
+    assert.ok(!Object.hasOwn(out, victim), `${victim} was seeded by a prototype setter`);
+    assert.throws(() => assertShippedCounts(SHIP_EXPECTED, out), /target has no answer/);
+  } finally {
+    if (installed) delete Object.prototype[SHIP_TABLES[0]];
+  }
+});
+
+test('a full six-table readback still verifies clean when every chunk answers', () => {
+  // The happy path across the split: chunking is invisible to the caller.
+  const readOnce = (group) => Object.fromEntries(group.map((t) => [t, SHIP_EXPECTED[t]]));
+  const out = readShippedCounts('sigma', false, SHIP_EXPECTED, { readOnce, sleep: () => {} });
+  assert.doesNotThrow(() => assertShippedCounts(SHIP_EXPECTED, out));
+});
+
 test('readShippedCounts short-circuits to {} when nothing was expected', () => {
   // No numeric expectations → no tables to read → no wrangler call at all.
   let calls = 0;
@@ -462,43 +695,154 @@ const shipHarness = (over = {}) => {
   const opts = {
     tables: over.tables ?? ['persons', 'declarations'],
     readTable: (t) => source[t] ?? null,
-    wipeSql: 'DELETE FROM persons;',
+    readSchema:
+      over.readSchema ??
+      ((ts) =>
+        Object.fromEntries(ts.map((t) => [t, { sql: `CREATE TABLE ${t}(id)`, indexes: [] }]))),
     apply: (name, sql) => calls.push([name, sql]),
     sleep: (ms) => naps.push(ms),
     readCounts: over.readCounts ?? ((expected) => ({ ...expected })),
     maxStatements: over.maxStatements ?? 2,
     paceMs: 500,
   };
-  return { calls, naps, run: () => runShip(opts) };
+  return { calls, naps, opts, run: () => runShip(opts) };
 };
 
-test('runShip wipes, then ships every table in request-sized chunks, in order', () => {
+test('runShip uploads staging before the swap and paces every request', () => {
   const h = shipHarness();
-  const summary = h.run();
-
-  assert.deepEqual(
-    h.calls.map(([name]) => name),
-    ['0_wipe', 'persons.1', 'persons.2', 'persons.3', 'declarations'],
-    'wipe first, chunks numbered so a failed request is identifiable, single-chunk table stays bare',
-  );
-  assert.deepEqual(
-    h.calls.map(([, sql]) => sql),
-    ['DELETE FROM persons;', 'A;B;', 'C;D;', 'E;', 'F;'],
-  );
-  assert.deepEqual(summary, { persons: 5, declarations: 1 });
+  assert.deepEqual(h.run(), { persons: 5, declarations: 1 });
+  const names = h.calls.map(([name]) => name);
+  assert.equal(names[0], 'clear_staging');
+  assert.equal(names[1], 'prepare_persons');
+  assert.equal(names.at(-1), 'publish');
+  assert.ok(names.indexOf('publish') > names.indexOf('declarations.0'));
+  assert.ok(!names.includes('0_wipe'));
+  assert.equal(h.naps.length, h.calls.length - 1);
 });
 
-// THE regression this exists to prevent: the counter used to restart per table, so every table
-// boundary — including wipe → first insert, the most destructive transition in the run — was unpaced.
-test('runShip paces every request boundary, including wipe → first insert', () => {
-  const h = shipHarness();
-  h.run();
-  assert.equal(h.calls.length, 5);
-  assert.deepEqual(
-    h.naps,
-    [500, 500, 500, 500],
-    'one gap between each pair of requests: none before the first, none after the last, and none skipped at a table boundary',
-  );
+test('runShip refuses a target that lacks a shipped table before any request', () => {
+  const h = shipHarness({ readSchema: () => ({}) });
+  assert.throws(() => h.run(), /target lacks table persons/);
+  assert.equal(h.calls.length, 0);
+});
+
+test('the swap preserves the live tables on a short staging table or a foreign-key failure', () => {
+  for (const failure of ['short', 'foreign-key']) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(`PRAGMA foreign_keys=ON;
+        CREATE TABLE persons(id PRIMARY KEY);
+        CREATE TABLE declarations(id PRIMARY KEY,person_id REFERENCES persons(id));
+        INSERT INTO persons VALUES(1); INSERT INTO declarations VALUES(1,1);`);
+      assert.throws(
+        () =>
+          runShip({
+            tables: ['persons', 'declarations'],
+            wipeTables: ['declarations', 'persons'],
+            paceMs: 0,
+            sleep() {},
+            readCounts: (x) => x,
+            readSchema: (tables) =>
+              schemaFromRows(
+                db.prepare('SELECT type, tbl_name, sql FROM sqlite_master').all(),
+                tables,
+              ),
+            readTable(table) {
+              return {
+                rowCount: 1,
+                statements: [
+                  table === 'persons'
+                    ? 'INSERT INTO "persons" VALUES(2);'
+                    : `INSERT INTO "declarations" VALUES(2,${failure === 'foreign-key' ? 999 : 2});`,
+                ],
+              };
+            },
+            apply(label, sql) {
+              if (label === 'publish' && failure === 'short')
+                db.exec('DELETE FROM rp_next_declarations');
+              db.exec(sql);
+            },
+          }),
+        failure === 'short' ? /incomplete_staging/ : /FOREIGN KEY/,
+      );
+      assert.equal(db.prepare('SELECT id FROM persons').get().id, 1);
+      assert.equal(db.prepare('SELECT person_id FROM declarations').get().person_id, 1);
+    } finally {
+      db.close();
+    }
+  }
+});
+
+test('the swap moves whole generations: children follow their parents and the replaced one stays', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`PRAGMA foreign_keys=ON;
+      CREATE TABLE persons(id INTEGER PRIMARY KEY, name TEXT);
+      CREATE TABLE declarations(id INTEGER PRIMARY KEY,person_id REFERENCES persons(id));
+      CREATE INDEX idx_declarations_person ON declarations(person_id);
+      INSERT INTO persons VALUES(1,'old'); INSERT INTO declarations VALUES(1,1);`);
+    const rows = {
+      persons: [{ id: 2, name: 'new' }],
+      declarations: [{ id: 2, person_id: 2 }],
+    };
+    const ship = () =>
+      runShip({
+        tables: Object.keys(rows),
+        wipeTables: ['declarations', 'persons'],
+        paceMs: 0,
+        sleep() {},
+        maxStatements: 5,
+        readCounts: (expected) =>
+          Object.fromEntries(
+            Object.keys(expected).map((t) => [
+              t,
+              db.prepare(`SELECT count(*) n FROM "${t}"`).get().n,
+            ]),
+          ),
+        readSchema: (tables) =>
+          schemaFromRows(db.prepare('SELECT type, tbl_name, sql FROM sqlite_master').all(), tables),
+        readTable(table) {
+          const columns = db
+            .prepare(`PRAGMA table_info("${table}")`)
+            .all()
+            .map((c) => c.name);
+          return {
+            rowCount: rows[table].length,
+            statements: insertStatements(table, columns, rows[table]),
+          };
+        },
+        apply(_label, sql) {
+          db.exec(sql);
+        },
+      });
+    ship();
+    assert.deepEqual(
+      db
+        .prepare('SELECT * FROM declarations')
+        .all()
+        .map((r) => ({ ...r })),
+      rows.declarations,
+    );
+    assert.equal(db.prepare('SELECT name FROM rp_prev_persons').get().name, 'old');
+    const ddl = Object.fromEntries(
+      db
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type='table'")
+        .all()
+        .map((r) => [r.name, r.sql]),
+    );
+    assert.match(ddl.declarations, /REFERENCES "?persons"?\(id\)/);
+    assert.match(ddl.rp_prev_declarations, /REFERENCES "rp_prev_persons"\(id\)/);
+    assert.equal(
+      db.prepare("SELECT tbl_name FROM sqlite_master WHERE name='idx_declarations_person'").get()
+        .tbl_name,
+      'declarations',
+    );
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+    ship(); // a second publication replaces the previous generation without a name clash
+    assert.equal(db.prepare('SELECT name FROM rp_prev_persons').get().name, 'new');
+  } finally {
+    db.close();
+  }
 });
 
 test('runShip verifies what landed — a short table fails the run', () => {
@@ -511,12 +855,107 @@ test('runShip fails the run when the read-back itself could not answer', () => {
   assert.throws(() => h.run(), /no answer/);
 });
 
-test('runShip skips a table absent from the work DB without shipping or verifying it', () => {
+test('a swallowing prototype setter cannot drop a table out of the verification', () => {
+  // The summary is what the guard compares against. It was built with `summary[table] = …`, so an
+  // inherited setter that accepts the write without defining an own property left NO entry — and
+  // Object.entries then skipped that table in both the expected set and the readback. A shipped table
+  // would simply never be verified: a pass with nothing checked, which is the worst possible „green".
+  let installed = false;
+  try {
+    Object.defineProperty(Object.prototype, 'declarations', {
+      configurable: true,
+      enumerable: false,
+      set() {
+        /* swallow: no own property is ever defined */
+      },
+      get() {
+        return undefined;
+      },
+    });
+    installed = true;
+    const h = shipHarness({ tables: ['persons', 'declarations'] });
+    const summary = h.run();
+    assert.ok(
+      Object.hasOwn(summary, 'declarations'),
+      'the shipped table vanished from the summary the guard verifies',
+    );
+  } finally {
+    if (installed) delete Object.prototype.declarations;
+  }
+});
+
+test('runShip refuses a missing source table before any request', () => {
   const h = shipHarness({ tables: ['persons', 'declarations', 'ghost'] });
-  const summary = h.run();
-  assert.equal(summary.ghost, 'absent (skipped)');
-  assert.ok(
-    !h.calls.some(([name]) => name.startsWith('ghost')),
-    'an absent table must issue no request',
+  assert.throws(() => h.run(), /missing ghost/);
+  assert.equal(h.calls.length, 0);
+});
+
+test('leftover staging tables are dropped children first, so a parent drop never trips a staged foreign key', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`PRAGMA foreign_keys=ON;
+    CREATE TABLE rp_next_persons(id PRIMARY KEY);
+    CREATE TABLE rp_next_declarations(id PRIMARY KEY, person_id REFERENCES rp_next_persons(id));
+    INSERT INTO rp_next_persons VALUES(1); INSERT INTO rp_next_declarations VALUES(1,1);`);
+  db.exec(stagedDropSql(['persons', 'declarations'], ['declarations', 'persons']));
+  assert.equal(
+    db.prepare("SELECT count(*) n FROM sqlite_master WHERE name LIKE 'rp_next_%'").get().n,
+    0,
   );
+});
+
+test('runShip reports progress in a container run, so a long upload is not a stall', (t) => {
+  const lines = [];
+  t.mock.method(console, 'log', (line) => lines.push(line));
+  process.env.SIGMA_RUN_ID = 'test-run';
+  t.after(() => delete process.env.SIGMA_RUN_ID);
+  shipHarness().run();
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: 'declarations_progress',
+    stage: 'publish',
+    completed: 1,
+  });
+});
+
+test('the publish receipt rides in the swap and makes a second attempt a no-op', () => {
+  const schema = {
+    persons: { sql: 'CREATE TABLE persons(id)', indexes: [] },
+    declarations: { sql: 'CREATE TABLE declarations(id)', indexes: [] },
+  };
+  const reads = [
+    { table: 'persons', rowCount: 1 },
+    { table: 'declarations', rowCount: 0 },
+  ];
+  const sql = swapSql(schema, reads, ['declarations', 'persons'], 'run-42');
+  const statements = sql.split('\n');
+  // The receipt is written after the renames, inside the same batch.
+  const receipt = statements.findIndex((line) => line.startsWith('INSERT INTO rp_generation'));
+  const lastRename = statements.findLastIndex((line) => line.includes('RENAME TO "persons"'));
+  assert.ok(receipt > lastRename && lastRename > 0);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS rp_generation/);
+  assert.match(sql, /INSERT INTO rp_generation VALUES\('run-42'/);
+  assert.ok(!swapSql(schema, reads, ['declarations', 'persons']).includes('rp_generation'));
+
+  // A target already serving this run is left alone: no requests, no re-verification.
+  const h = shipHarness();
+  assert.deepEqual(runShip({ ...h.opts, runId: 'run-42', published: 'run-42' }), {});
+  assert.equal(h.calls.length, 0);
+});
+
+test('a container stop between two requests yields instead of leaving half an upload', () => {
+  const h = shipHarness();
+  let sent = 0;
+  assert.throws(
+    () =>
+      runShip({
+        ...h.opts,
+        apply: (name, sql) => {
+          sent++;
+          h.calls.push([name, sql]);
+        },
+        yielding: () => sent >= 3,
+      }),
+    ShipYield,
+  );
+  assert.equal(h.calls.length, 3);
+  assert.ok(!h.calls.some(([name]) => name === 'publish'));
 });

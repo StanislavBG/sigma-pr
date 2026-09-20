@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { emitLinkRecords } from './tr-fixture.mjs';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -32,14 +33,15 @@ function buildAndLoad(bidderRows) {
   const DB = path.join(dir, 'fixture.sqlite');
   const STAGING = path.join(dir, 'staging');
   fs.mkdirSync(STAGING, { recursive: true });
+  fs.writeFileSync(path.join(STAGING, 'manifest.json'), JSON.stringify({ schemaVersion: 8 }));
 
   const db = new DatabaseSync(DB);
   db.exec(`
-    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT);
+    CREATE TABLE bidders(id TEXT PRIMARY KEY, name TEXT, eik_normalized TEXT, eik_valid INT, settlement TEXT, ownership_kind TEXT);
     CREATE TABLE authorities(id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE tenders(id TEXT PRIMARY KEY, authority_id TEXT);
     CREATE TABLE contracts(id TEXT PRIMARY KEY, tender_id TEXT, bidder_id TEXT, signed_at TEXT, amount_eur REAL);
-    ${bidderRows.map((r) => `INSERT INTO bidders VALUES (${r});`).join('\n')}
+    ${bidderRows.map((r) => `INSERT INTO bidders(id,name,eik_normalized,eik_valid,settlement) VALUES (${r});`).join('\n')}
   `);
   db.close();
   fs.writeFileSync(path.join(STAGING, 'holdings.jsonl'), '');
@@ -56,6 +58,7 @@ function buildAndLoad(bidderRows) {
   const trDb = path.join(dir, 'tr-cache.sqlite');
   new DatabaseSync(trDb).close();
 
+  emitLinkRecords({ workDb: DB, staging: STAGING, trDb });
   let threw = false;
   try {
     execFileSync(

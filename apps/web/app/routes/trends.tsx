@@ -14,7 +14,7 @@ import { PageHeader } from '../components/PageHeader';
 import { TotalsStrip, type Total } from '../components/TotalsStrip';
 import { ComboTrendChart } from '../components/ComboTrendChart';
 import { Callout } from '../components/ui';
-import { publicCache } from '../lib/cache';
+import { cached } from '../lib/cache';
 import {
   cpvGroupSelection,
   trendAngle,
@@ -40,9 +40,7 @@ export function meta(_: Route.MetaArgs) {
   ];
 }
 
-export function headers() {
-  return { 'Cache-Control': publicCache(1800) };
-}
+export const headers = cached(1800);
 
 type Angle = TrendAngle;
 type Step = TrendStep;
