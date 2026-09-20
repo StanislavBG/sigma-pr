@@ -5,7 +5,7 @@
 // (it depends only on the normalised name). These entities are flagged „непотвърден ЕИК" and may
 // fragment across name variants — a known limit until the Trade Register lands.
 
-function b64urlEncode(s: string): string {
+export function b64urlEncode(s: string): string {
   const bytes = new TextEncoder().encode(s);
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
@@ -43,23 +43,31 @@ export function bidderIdFromSlug(slug: string): string | null {
   return null;
 }
 
-/** person id (`person:<name-key>|<institution-key>`) → `/conflicts/official/:slug` segment. The id encodes
- *  the (name, institution) grain (ADR-0026; `personId()` in load.mjs) — NOT name alone — so two namesakes in
- *  different institutions get DISTINCT slugs and never collapse into one page/row. The key is uppercase
- *  Cyrillic with spaces (companyNameKey output) — not URL-clean — so base64url the WHOLE id (name+institution),
- *  like a name-keyed bidder. Stable across rebuilds (depends only on the normalised name+institution); encodes
- *  the id wholesale and never split-parses the internal `|`, nor the extra `|`s that link_key layers on. */
+/** Source or canonical person id → official profile URL. Encode the complete id; display names never
+ * determine canonical URLs. Legacy source URLs are resolved from current evidence membership. */
 export function personSlug(personId: string): string {
   return b64urlEncode(personId.startsWith('person:') ? personId.slice(7) : personId);
 }
 
-/** `/conflicts/official/:slug` segment → person id, or null if the slug cannot be decoded. */
+/** `/persons/:slug` segment (declaration-derived id) → person id, or null if the slug cannot be decoded. */
 export function personIdFromSlug(slug: string): string | null {
   try {
     return 'person:' + b64urlDecode(slug);
   } catch {
     return null;
   }
+}
+
+/** A person the Trade Register identifies → `/persons/:slug` segment: the identifier the register publishes
+ *  for them in place of the personal number (a salted hash, 64 hex characters), the same on every read. */
+export function registryPersonSlug(indent: string): string {
+  return indent.toLowerCase();
+}
+
+/** `/persons/:slug` segment → the register's identifier, or null for anything that is not one. */
+export function registryPersonIdFromSlug(slug: string): string | null {
+  const id = slug.toLowerCase();
+  return /^[0-9a-f]{64}$/.test(id) ? id : null;
 }
 
 /** authority id (`auth:ЕИК`) → `/authorities/:eik` segment. */
@@ -107,11 +115,12 @@ export function contractIdFromSlug(slug: string): string {
 
 /** Map a raw domain id to its explorer route. Used to turn FTS `ref`s into hrefs. */
 export function hrefForEntity(
-  kind: 'authority' | 'company' | 'contract' | 'official',
+  kind: 'authority' | 'company' | 'contract' | 'official' | 'person',
   id: string,
 ): string {
   if (kind === 'authority') return `/authorities/${authoritySlug(id)}`;
   if (kind === 'company') return `/companies/${companySlug(id)}`;
-  if (kind === 'official') return `/conflicts/official/${personSlug(id)}`;
+  if (kind === 'official') return `/persons/${personSlug(id)}`;
+  if (kind === 'person') return `/persons/${registryPersonIdFromSlug(id) ?? personSlug(id)}`;
   return `/contracts/${contractSlug(id)}`;
 }

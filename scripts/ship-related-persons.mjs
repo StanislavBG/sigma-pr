@@ -12,7 +12,10 @@
 //
 //   node scripts/ship-related-persons.mjs --work-db data/work/backfill.sqlite --emit out/rp   # SQL only
 //   node scripts/ship-related-persons.mjs --work-db … --remote --yes                          # apply to D1
+import { assertAuditedBuild } from './cacbg/build-proof.mjs';
+import { progress } from './cacbg/progress.mjs';
 import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -25,17 +28,54 @@ import { pathToFileURL } from 'node:url';
 // SQLITE_CONSTRAINT_FOREIGNKEY (a re-seed then dies at persons).
 export const TABLES = [
   'persons',
+  'person_entities',
+  'person_sources',
+  'person_identity_evidence',
+  'person_source_aliases',
+  'registry_requested_companies',
   'declarations',
   'declared_interests',
   'interest_links',
   // AFTER interest_links: a seal references its link, so inserting it first fails the FK (#279).
   'interest_link_evidence',
   'interest_link_authorities',
+  // Empty legacy table; old URL redirects are no longer generated.
+  'person_redirects',
+  'declaration_metadata',
+  'declaration_companies',
+  'person_registry_links',
+  'interest_link_history',
+  'declaration_identity_evidence',
+  'interest_link_observations',
+  'person_relatives',
+];
+// The registry layer, parents first. Only the dev environment, which has no registry process of its own,
+// takes these tables from a local work database (`--with-registry`).
+export const REGISTRY_TABLES = [
+  'registry_deeds',
+  'registry_persons',
+  'registry_roles',
+  'registry_identity_observations',
+  'registry_identity_snapshots',
+  'registry_company_history',
 ];
 // DELETE order for the pre-insert wipe — children before parents. related_persons_internal (PII, never
 // re-shipped) also REFERENCES declarations, so it is wiped before declarations; otherwise a populated D1
 // carrying internal rows would block DELETE FROM declarations.
 export const WIPE_ORDER = [
+  'person_relatives',
+  'registry_requested_companies',
+  'person_source_aliases',
+  'person_identity_evidence',
+  'person_sources',
+  'person_entities',
+  'interest_link_observations',
+  'declaration_identity_evidence',
+  'interest_link_history',
+  'declaration_companies',
+  'person_registry_links',
+  'declaration_metadata',
+  'person_redirects',
   'interest_link_authorities',
   // BEFORE interest_links, for the mirror reason: deleting a link whose seal survives fails the FK.
   'interest_link_evidence',
@@ -45,9 +85,6 @@ export const WIPE_ORDER = [
   'declarations',
   'persons',
 ];
-export function wipeSql() {
-  return WIPE_ORDER.map((t) => `DELETE FROM ${sqlIdent(t)};`).join('\n') + '\n';
-}
 const MAX_BATCH_BYTES = 90_000;
 export const MAX_BATCH_ROWS = 400;
 
@@ -73,57 +110,194 @@ export function chunkStatements(statements, maxPerRequest = MAX_STATEMENTS_PER_R
   return chunks;
 }
 
+/**
+ * Define an OWN property, never assign. `obj[k] = v` runs an inherited setter if Object.prototype
+ * carries one for that name, and a hostile or merely broken setter can then swallow the write (leaving
+ * no own entry, so `Object.entries` skips the table entirely) or define entries for keys nobody wrote.
+ * Both the ship summary and the readback merge feed the verification guard, so both must own what they
+ * record — otherwise a table can vanish from the comparison instead of failing it.
+ */
+function setOwn(obj, key, value) {
+  Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 /** Block the (synchronous) ship loop without burning CPU. */
 const sleepSync = (ms) => {
   if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
 
-/**
- * The whole destructive live path: wipe, then paced request-sized inserts per table, then the read-back
- * check. Both guarantees live HERE, behind injected I/O (`apply`, `sleep`, `readCounts`), because both are
- * one refactor away from silently vanishing — „one request per table" is exactly the shape this drifts back
- * to, and a `if (!emit) assert…` line at a call site is exactly the kind of line that gets dropped.
- * Testing the pure helpers alone did NOT catch either: reverting the call site and deleting the
- * verification each left the whole suite green. Keep the orchestration itself covered.
- * @returns {Record<string, number|string>} rows shipped per table
- */
+/** Upload off to the side, then publish by renaming: the served tables become the previous generation
+ * and the staged ones take their names, in one atomic batch. Staged tables carry the served schema
+ * (constraints, foreign keys to their staged parents), so a bad row fails while staging and never
+ * touches served rows; an interrupted upload leaves the served tables as they were. */
+/** An intentional stop between two requests: the caller exits 75 and the next attempt continues. */
+export class ShipYield extends Error {}
+let yieldRequested = false;
+
 export function runShip({
   tables,
+  wipeTables = WIPE_ORDER,
   readTable,
-  wipeSql,
+  readSchema,
   apply,
   sleep,
   readCounts,
   maxStatements,
   paceMs,
+  yielding = () => false,
+  runId = null,
+  published = null,
 }) {
-  // ONE counter for the whole run, not one per table. Pacing per table left every table boundary
-  // unpaced — including wipe → first insert, which is the single most destructive transition here.
+  // A published receipt for this very run means the swap already ran: the generation was verified by
+  // rp_staging_guard before it moved, so there is nothing left to do and nothing to re-check.
+  if (runId && published === runId) {
+    console.log(`ship: generation ${runId} is already published`);
+    return {};
+  }
   let requests = 0;
-  const applyPaced = (label, sql) => {
-    if (requests++) sleep(paceMs); // between requests only — never before the first
+  const send = (label, sql) => {
+    // The platform can stop the container at any moment. Between two requests is the only safe place
+    // to stop by choice: every request is one transaction, so nothing is left half applied.
+    if (yielding()) throw new ShipYield(`yielded before ${label}`);
+    if (requests++) sleep(paceMs);
     apply(label, sql);
+    // Each applied request is progress, so a long upload is not taken for a stalled container.
+    progress('publish', requests);
   };
-
-  applyPaced('0_wipe', wipeSql);
-
   const summary = {};
-  for (const table of tables) {
+  const reads = tables.map((table) => {
     const read = readTable(table);
-    if (!read) {
-      summary[table] = 'absent (skipped)';
-      continue;
-    }
-    summary[table] = read.rowCount;
-    const chunks = chunkStatements(read.statements, maxStatements);
-    chunks.forEach((chunk, i) =>
-      applyPaced(chunks.length > 1 ? `${table}.${i + 1}` : table, chunk.join('')),
+    if (!read) throw new Error(`incomplete build: missing ${table}`);
+    setOwn(summary, table, read.rowCount);
+    return { table, ...read };
+  });
+  const schema = readSchema([...new Set([...tables, ...wipeTables])]);
+  for (const table of tables)
+    if (!schema[table]?.sql) throw new Error(`target lacks table ${table}`);
+  // A failed earlier run leaves staged tables behind. Children go first: dropping a staged parent that
+  // staged children still reference makes SQLite check every child row, which D1 does not finish.
+  send('clear_staging', stagedDropSql(tables, wipeTables));
+  for (const { table, statements } of reads) {
+    const staged = `rp_next_${table}`;
+    send(
+      `prepare_${table}`,
+      `DROP TABLE IF EXISTS ${sqlIdent(staged)};\n${stagingDdl(schema[table].sql, table, tables)};`,
+    );
+    chunkStatements(statements, maxStatements).forEach((chunk, i) =>
+      send(
+        `${table}.${i}`,
+        chunk
+          .map((sql) => sql.replace(/^INSERT INTO "[^"]+"/, `INSERT INTO ${sqlIdent(staged)}`))
+          .join(''),
+      ),
     );
   }
-
+  const stagedCounts = Object.fromEntries(reads.map((r) => [`rp_next_${r.table}`, r.rowCount]));
+  assertShippedCounts(stagedCounts, readCounts(stagedCounts));
+  // The generation before is no longer served; retiring it on its own keeps the swap batch small.
+  send('retire_previous', retireSql(reads, wipeTables));
+  send('publish', swapSql(schema, reads, wipeTables, runId));
   assertShippedCounts(summary, readCounts(summary));
   return summary;
 }
+
+/** The served table's DDL, renamed for staging; its foreign keys point at the staged parents, so the
+ * references land on the served names when the parents are renamed (SQLite rewrites references with a
+ * RENAME). */
+export function stagingDdl(sql, table, shipped) {
+  const staged = new Set(shipped);
+  return sql
+    .replace(
+      /^(CREATE\s+(?:VIRTUAL\s+)?TABLE\s+)(?:"[^"]*"|'[^']*'|[^\s("']+)/i,
+      (_, head) => `${head}${sqlIdent(`rp_next_${table}`)}`,
+    )
+    .replace(/(REFERENCES\s+)("?)([A-Za-z_]\w*)\2(?=\s*\()/g, (m, head, _q, ref) =>
+      staged.has(ref) ? `${head}${sqlIdent(`rp_next_${ref}`)}` : m,
+    );
+}
+
+const indexName = (sql) =>
+  /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?("?)([^"\s]+)\1/i.exec(sql)[2];
+
+/** One batch: the generation before goes (children first), the served tables become the previous
+ * generation, the staged ones take their names (parents first) and their indexes. A staged table
+ * short of its expected rows fails the batch before any rename. Wipe-only tables are emptied, never
+ * swapped. The previous generation stays until the next publication: rollback is the swap in reverse. */
+/** Every staged table, children first. */
+export function stagedDropSql(tables, wipeTables = WIPE_ORDER) {
+  const order = [
+    ...wipeTables.filter((t) => tables.includes(t)),
+    ...tables.filter((t) => !wipeTables.includes(t)),
+  ];
+  return order.map((t) => `DROP TABLE IF EXISTS ${sqlIdent(`rp_next_${t}`)};`).join('\n') + '\n';
+}
+
+/** The previous generation, children first. */
+export function retireSql(reads, wipeTables = WIPE_ORDER) {
+  const shipped = new Set(reads.map((r) => r.table));
+  return (
+    wipeTables
+      .filter((t) => shipped.has(t))
+      .map((t) => `DROP TABLE IF EXISTS ${sqlIdent(`rp_prev_${t}`)};`)
+      .join('\n') + '\n'
+  );
+}
+
+export function swapSql(schema, reads, wipeTables = WIPE_ORDER, runId = null) {
+  const shipped = new Set(reads.map((r) => r.table));
+  const prev = (t) => sqlIdent(`rp_prev_${t}`);
+  const next = (t) => sqlIdent(`rp_next_${t}`);
+  const indexes = reads.flatMap((r) => schema[r.table].indexes ?? []);
+  return [
+    'DROP TABLE IF EXISTS rp_staging_guard;',
+    'CREATE TABLE rp_staging_guard (n INTEGER CONSTRAINT incomplete_staging CHECK (n = 0));',
+    ...reads.map(
+      ({ table, rowCount }) =>
+        `INSERT INTO rp_staging_guard SELECT COUNT(*) - ${rowCount} FROM ${next(table)};`,
+    ),
+    'DROP TABLE rp_staging_guard;',
+    ...wipeTables.filter((t) => shipped.has(t)).map((t) => `DROP TABLE IF EXISTS ${prev(t)};`),
+    ...reads.map(({ table }) => `ALTER TABLE ${sqlIdent(table)} RENAME TO ${prev(table)};`),
+    ...indexes.map((sql) => `DROP INDEX IF EXISTS ${sqlIdent(indexName(sql))};`),
+    ...reads.map(({ table }) => `ALTER TABLE ${next(table)} RENAME TO ${sqlIdent(table)};`),
+    ...indexes.map((sql) => sql.replace(/;?\s*$/, ';')),
+    ...wipeTables
+      .filter((t) => !shipped.has(t) && schema[t]?.sql)
+      .map((t) => `DELETE FROM ${sqlIdent(t)};`),
+    // The trigger-based promotion of earlier versions leaves nothing behind.
+    'DROP TRIGGER IF EXISTS rp_publish_apply;',
+    'DROP TABLE IF EXISTS rp_publish;',
+    // The receipt rides in the swap's own transaction: if it names this run, the generation IS served.
+    // Without it a container stopped during the swap leaves nobody able to tell whether it happened,
+    // and the next attempt republishes the same generation an hour and a half later.
+    ...(runId
+      ? [
+          'CREATE TABLE IF NOT EXISTS rp_generation (run_id TEXT PRIMARY KEY, published_at TEXT NOT NULL);',
+          'DELETE FROM rp_generation;',
+          `INSERT INTO rp_generation VALUES(${sqlLiteral(runId)}, ${sqlLiteral(new Date().toISOString())});`,
+        ]
+      : []),
+  ].join('\n');
+}
+
+/** The served schema of the given tables: each table's DDL and its named indexes, as sqlite_master
+ * holds them. Rows come from `SELECT type, tbl_name, sql FROM sqlite_master`. */
+export function schemaFromRows(rows, tables) {
+  const schema = {};
+  for (const t of tables) schema[t] = { sql: null, indexes: [] };
+  for (const r of rows) {
+    const entry = schema[r.tbl_name];
+    if (!entry || !r.sql) continue;
+    if (r.type === 'table') entry.sql = r.sql;
+    else if (r.type === 'index') entry.indexes.push(r.sql);
+  }
+  return schema;
+}
+
+const schemaQuery = (tables) =>
+  `SELECT type, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND tbl_name IN (${tables
+    .map((t) => `'${t.replaceAll("'", "''")}'`)
+    .join(',')}) ORDER BY type DESC, name`;
 
 // Supports --name=value, --name value, and bare --name (boolean). A --name whose next token is another
 // --flag (or absent) is a boolean; otherwise it consumes the next token as its value.
@@ -151,38 +325,6 @@ export function sqlLiteral(v) {
   if (typeof v === 'bigint') return String(v);
   if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL';
   return `'${String(v).replaceAll('\x00', '').replaceAll("'", "''")}'`;
-}
-
-/**
- * Refuse to ship when the published (surfaced) link count is below a floor. Empty/partial staging — a
- * cold cache on a `full_crawl=false` run, or a broken extract — yields 0 published links; `audit.mjs`
- * then passes trivially (0 links = 0 violations), and the per-table `DELETE FROM` below would WIPE the
- * live public surface with zero re-inserts. This floor is the last gate before that. Override deliberately
- * with `--min-links=<N>` when a genuinely smaller set is expected. Pure — unit-tested.
- */
-export function assertShipFloor(publishedCount, minLinks) {
-  if (publishedCount < minLinks) {
-    throw new Error(
-      `refusing to ship: ${publishedCount} published links < floor ${minLinks}. Empty/partial staging ` +
-        `would wipe the live surface. If this smaller set is intentional, re-run with --min-links=${publishedCount}.`,
-    );
-  }
-}
-
-/**
- * Parse the --min-links floor. Footgun guarded: `arg()` returns boolean `true` for a VALUELESS `--min-links`
- * flag, and `Number(true) === 1` — which silently collapses the anti-wipe floor from 50 to 1 while passing a
- * naive integer check. Reject the bare `true` explicitly, then require a positive integer. Pure — unit-tested.
- */
-export function parseMinLinks(raw) {
-  if (raw === true)
-    throw new Error(
-      '--min-links requires a value, e.g. --min-links=25 — a bare flag would collapse the anti-wipe floor to 1.',
-    );
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1)
-    throw new Error(`--min-links must be a positive integer, got ${JSON.stringify(raw)}.`);
-  return n;
 }
 
 /** Shared shape check for the pacing flags: a bare `--flag` must not silently mean 1 (or 0). */
@@ -316,7 +458,14 @@ export function readCountsWithRetry(attempt, tables, { attempts = 4, sleep = sle
     if (i > 0) sleep(2000 * i);
     try {
       const counts = attempt();
-      if (tables.every((t) => Number.isInteger(counts[t]) && counts[t] >= 0)) return counts;
+      // Object.hasOwn, not a bare lookup: a polluted Object.prototype would otherwise let an INHERITED
+      // integer stand in for a count the target never reported.
+      if (
+        tables.every(
+          (t) => Object.hasOwn(counts, t) && Number.isInteger(counts[t]) && counts[t] >= 0,
+        )
+      )
+        return counts;
       lastErr = new Error('readback returned an incomplete answer');
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
@@ -328,40 +477,127 @@ export function readCountsWithRetry(attempt, tables, { attempts = 4, sleep = sle
   return {};
 }
 
+// How many tables one readback query may cover. The readback asks for every shipped table at once, as
+// `SELECT … UNION ALL SELECT …` — one term per table. SQLite caps the terms in a compound SELECT
+// (SQLITE_MAX_COMPOUND_SELECT); the stock limit is 500, but BOTH D1 runtimes cap it at 5. Measured on
+// each, not assumed — five terms answer, six return `too many terms in compound SELECT: SQLITE_ERROR`;
+// locally through `wrangler d1 execute --local` (workerd) and remotely against a staging database. The
+// terms need not touch a table: `SELECT 1 UNION ALL …` trips it just the same, so this is the engine's
+// limit and not a property of what we ship.
+//
+// The ship writes six tables. So the readback did not fail to READ, it failed to PARSE: wrangler
+// returned an error object, no row carried a count, and the guard reported „target has no answer" for
+// EVERY table — over data that had just shipped correctly — and the run died before the reindex behind
+// it. Exactly the false verdict #335 removed from the flaky-network path, arriving through a different
+// door: not a timeout, a query neither engine will ever accept.
+//
+// That is also why the scheduled workflow had been red at this step since the sixth table landed
+// (#309, 2026-08-14): every run after it failed here, and the 2026-08-31 run — with #335's retries in
+// place — burned all four attempts on the same rejection. A deterministic parse error does not heal
+// with backoff; only splitting the query does.
+//
+// Four leaves room under the measured 5 for a table to be added without silently re-crossing the line.
+export const READBACK_MAX_TABLES = 4;
+
+/** Split into runs of at most `size`, order preserved. Exported so the chunking itself is testable. */
+export function chunkTables(tables, size = READBACK_MAX_TABLES) {
+  const width = Number.isInteger(size) && size > 0 ? size : READBACK_MAX_TABLES;
+  const out = [];
+  for (let i = 0; i < tables.length; i += width) out.push(tables.slice(i, i + width));
+  return out;
+}
+
 // `deps` is a TEST SEAM: prod passes nothing, so `readOnce` is the live wrangler read, `sleep` falls
 // through to the helper's real `sleepSync`, and `attempts` to its default 4. Tests inject a fake reader,
 // a recording sleep, and a small budget to pin the retry WIRING — that readShippedCounts actually wraps
 // the read in readCountsWithRetry with a real backoff, and not a one-shot — without touching wrangler.
+// `readOnce` receives the group it is being asked about, so a test can answer per chunk.
+/** The run id the target says it is serving, or null when it has never been published this way.
+ * A target without the receipt table answers null, which is the honest "unknown". */
+export function readPublishedGeneration(d1Name, remote, deps = {}) {
+  const exec =
+    deps.exec ??
+    ((args) => execFileSync('wrangler', args, { cwd: resolve('apps/web'), encoding: 'utf8' }));
+  try {
+    const rows =
+      parseWranglerJson(
+        exec([
+          'd1',
+          'execute',
+          d1Name,
+          remote ? '--remote' : '--local',
+          '--json',
+          '--command',
+          "SELECT run_id FROM rp_generation WHERE (SELECT 1 FROM sqlite_master WHERE name='rp_generation')",
+        ]),
+      )[0]?.results ?? [];
+    return typeof rows[0]?.run_id === 'string' ? rows[0].run_id : null;
+  } catch {
+    return null;
+  }
+}
+
 export function readShippedCounts(d1Name, remote, expected, deps = {}) {
   const tables = Object.entries(expected)
     .filter(([, n]) => typeof n === 'number')
     .map(([t]) => t);
   if (!tables.length) return {};
-  const sql = tables
-    .map((t) => `SELECT ${sqlLiteral(t)} AS t, COUNT(*) AS n FROM ${sqlIdent(t)}`)
-    .join(' UNION ALL ');
-  const readOnce =
-    deps.readOnce ??
-    (() => {
-      const out = execFileSync(
-        'wrangler',
-        ['d1', 'execute', d1Name, remote ? '--remote' : '--local', '--json', '--command', sql],
-        { cwd: resolve('apps/web'), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
-      );
-      // `wrangler d1 execute --json` writes its notices („▲ [WARNING] Processing wrangler.jsonc") to
-      // STDERR and leaves stdout as clean JSON, and execFileSync returns stdout alone, so slicing from
-      // the first '[' is safe today. The scan survives a future release that changes that, at one failed
-      // parse if it does.
-      const parsed = parseWranglerJson(out);
-      const rows = (Array.isArray(parsed) ? parsed[0]?.results : parsed?.results) ?? [];
-      // Only a non-negative integer counts as an answer. `Number(null)` is 0, which would let a
-      // null-valued cell pass for „the table is empty"; anything non-numeric lands as NaN so the retry
-      // treats it as an incomplete answer and assertShippedCounts fails closed if it is the final one.
-      return Object.fromEntries(rows.map((r) => [r.t, typeof r.n === 'number' ? r.n : Number.NaN]));
+  const counts = {};
+  // BOTH targets split. An earlier revision kept the remote path on a single query, on the assumption
+  // that only workerd capped compound SELECT — measuring the remote showed the same cap of 5, which is
+  // precisely why the scheduled ship had been failing verification since the sixth table. The split
+  // costs the remote path one extra invocation and gives up a single-snapshot read; nothing writes to
+  // these tables during verification (the ship itself is the only writer, and the workflow serialises
+  // its runs), and a verification that cannot execute is worth less than one that reads in two parts.
+  const groups = chunkTables(tables);
+  // Each chunk retries on its own. A chunk that exhausts contributes nothing, so its tables are simply
+  // absent from the merged answer — which assertShippedCounts still reads as „no answer" and fails
+  // closed on. Splitting widens no hole: a partial ship is caught by the counts, not by the batching.
+  for (const group of groups) {
+    const sql = group
+      .map((t) => `SELECT ${sqlLiteral(t)} AS t, COUNT(*) AS n FROM ${sqlIdent(t)}`)
+      .join(' UNION ALL ');
+    const readOnce = deps.readOnce
+      ? () => deps.readOnce(group)
+      : () => {
+          const out = execFileSync(
+            'wrangler',
+            ['d1', 'execute', d1Name, remote ? '--remote' : '--local', '--json', '--command', sql],
+            { cwd: resolve('apps/web'), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+          );
+          // `wrangler d1 execute --json` writes its notices („▲ [WARNING] Processing wrangler.jsonc") to
+          // STDERR and leaves stdout as clean JSON, and execFileSync returns stdout alone, so slicing
+          // from the first '[' is safe today. The scan survives a future release that changes that, at
+          // one failed parse if it does.
+          const parsed = parseWranglerJson(out);
+          const rows = (Array.isArray(parsed) ? parsed[0]?.results : parsed?.results) ?? [];
+          // Only a non-negative integer counts as an answer. `Number(null)` is 0, which would let a
+          // null-valued cell pass for „the table is empty"; anything non-numeric lands as NaN so the
+          // retry treats it as an incomplete answer and assertShippedCounts fails closed if it is final.
+          return Object.fromEntries(
+            rows.map((r) => [r.t, typeof r.n === 'number' ? r.n : Number.NaN]),
+          );
+        };
+    // Pass `sleep`/`attempts` through only when a test overrides them; undefined lets the helper
+    // defaults (the real sleepSync, 4 attempts) apply — so production always gets the backoff.
+    const answer = readCountsWithRetry(readOnce, group, {
+      sleep: deps.sleep,
+      attempts: deps.attempts,
     });
-  // Pass `sleep`/`attempts` through only when a test overrides them; undefined lets the helper defaults
-  // (the real sleepSync, 4 attempts) apply — so production always gets the backoff.
-  return readCountsWithRetry(readOnce, tables, { sleep: deps.sleep, attempts: deps.attempts });
+    // Take ONLY what this group was asked about. readCountsWithRetry validates the group's tables but
+    // hands back whatever the reader returned, so a reader answering beyond its group (a malformed
+    // response, an injected one) could seed a count for a table whose OWN group later dies — and the
+    // guard would then verify a table nobody successfully read. Fail-closed has to hold unconditionally,
+    // not just for well-behaved readers.
+    // defineProperty, not assignment: `counts[t] = …` runs a SETTER if Object.prototype carries one for
+    // that name, and a polluted setter could define own counts for tables no chunk ever read. Reading is
+    // already own-only (Object.hasOwn); writing has to be too, or the accumulator itself is the hole.
+    for (const t of group) {
+      if (!Object.hasOwn(answer, t)) continue;
+      setOwn(counts, t, answer[t]);
+    }
+  }
+  return counts;
 }
 
 function resolveD1Id(d1Name) {
@@ -381,16 +617,19 @@ function resolveD1Id(d1Name) {
  * Compare what we meant to ship against what the target actually holds. Pure — unit-tested; the live read
  * is injected as `readCounts`.
  *
- * The ship is a wipe followed by SEVERAL independent requests (no cross-request transaction), so a failure
- * part-way leaves the target holding some tables and not others — and today nothing notices: the run exits 0
- * and the surface renders as a smaller corpus. That asymmetry is glaring next to the READ path, where the
- * EOP hydrate already refuses to proceed on a local↔remote row-count mismatch. Close it on the destructive
- * side too: any drift fails the run, loudly and with the numbers.
+ * Uploads are checked before the atomic promotion; the served tables are checked again afterwards.
+ * A missing or non-numeric answer must fail the run, including when zero rows were expected.
  */
 export function assertShippedCounts(expected, actual) {
   const drift = Object.entries(expected)
     .filter(([, n]) => typeof n === 'number')
-    .map(([table, n]) => ({ table, expected: n, actual: actual[table] }))
+    // Object.hasOwn: a table the readback never answered for must read as „no answer" even if a
+    // polluted Object.prototype would happily hand back a plausible integer.
+    .map(([table, n]) => ({
+      table,
+      expected: n,
+      actual: Object.hasOwn(actual, table) ? actual[table] : undefined,
+    }))
     .filter(({ expected: e, actual: a }) => a !== e);
   if (drift.length)
     throw new Error(
@@ -401,7 +640,7 @@ export function assertShippedCounts(expected, actual) {
               `  ${table}: shipped ${e}, target has ${a === undefined ? 'no answer' : a}`,
           )
           .join('\n') +
-        '\nThe wipe already ran, so the surface is now partial. Re-run the ship.',
+        '\nVerification failed. Staging uploads do not replace the accepted surface; promotion is atomic.',
     );
 }
 
@@ -437,12 +676,17 @@ export function insertStatements(table, cols, rows) {
   return statements;
 }
 
-function main() {
+async function main() {
   const workDb = arg('work-db', 'data/work/backfill.sqlite');
   const emit = arg('emit', '');
   const remote = Boolean(arg('remote', false));
+  const withRegistry = Boolean(arg('with-registry', false));
+  if (withRegistry && process.env.SIGMA_SHIP_ENV !== 'dev')
+    throw new Error('--with-registry ships the registry layer to dev only');
   const d1Name = resolveD1Name({ remote, envName: process.env.SIGMA_D1_NAME });
-  const minLinks = parseMinLinks(arg('min-links', 50));
+  if (arg('min-links', undefined) !== undefined)
+    throw new Error('--min-links has been removed; ship requires a completed, audited build');
+  await assertAuditedBuild(String(workDb));
   const maxStatements = parsePositiveInt(
     arg('max-statements-per-request', MAX_STATEMENTS_PER_REQUEST),
     'max-statements-per-request',
@@ -451,20 +695,9 @@ function main() {
   if (remote && !arg('yes', false))
     throw new Error('--remote requires --yes (guards against an accidental prod write)');
 
-  const sqliteJson = (sql) => {
-    const out = execFileSync('sqlite3', ['-json', String(workDb), sql], {
-      encoding: 'utf8',
-      maxBuffer: 256 * 1024 * 1024,
-    }).trim();
-    return out ? JSON.parse(out) : [];
-  };
-  // Floor gate BEFORE any destructive write (assertShipFloor) — runs for --emit too: the emitted 0_wipe.sql is
-  // a hand-appliable destructive script, so it must clear the same anti-wipe floor as a live apply, not sneak
-  // an under-floor wipe past the guard by going through --emit (todorkolev #226). Counts surfaced links only:
-  // status='published' is the public surface (load.mjs assigns non-surfaced classes 'internal').
-  const published =
-    sqliteJson(`SELECT COUNT(*) AS n FROM interest_links WHERE status = 'published'`)[0]?.n ?? 0;
-  assertShipFloor(Number(published), minLinks);
+  const sourceDb = new DatabaseSync(String(workDb), { readOnly: true });
+  sourceDb.exec('BEGIN');
+  const sqliteJson = (sql) => sourceDb.prepare(sql).all();
   // Positive AUTHORIZATION check on a real remote wipe: the declared env + (name, id) must name an allowlisted
   // target (T48). Skipped for --emit (writes SQL files, touches no DB) — but the emitted wipe is stamped with a
   // loud header below so a later manual apply is never mistaken for a guarded one.
@@ -477,74 +710,99 @@ function main() {
       resolvedId: remote ? resolveD1Id(d1Name) : '',
     });
 
-  // D1 enforces foreign keys, so a re-seed cannot DELETE a parent while children still reference it. Wipe
-  // every table first, children-before-parents (WIPE_ORDER), as ONE batched request — `d1 execute --file`
-  // is a single request but not cross-statement transactional (ydimitrof #226); harmless here (all DELETEs
-  // in FK-correct order, and the surface is only briefly empty), but not "atomic". Then re-insert
-  // parents-before-children (TABLES), each table its own batched request. Trade-off vs the old per-table
-  // DELETE+INSERT: the surface is briefly empty between the wipe and the interest_links re-insert. That is
-  // acceptable for a deliberate manual re-seed and is the only structure that both works on a populated D1
-  // AND stays FK-correct — a single-transaction full replace exceeds D1's per-batch size ceiling.
+  // Upload staging tables, verify, then publish with one rename swap.
   const tmp = emit ? null : mkdtempSync(join(tmpdir(), 'sigma-ship-'));
+  // Each file is one transaction: a failed one leaves the target as it was, so a transient D1 failure
+  // (7009, a reset Durable Object) is retried as is.
   const applyFile = (name, sql) => {
     const f = join(tmp, `${name}.sql`);
     writeFileSync(f, sql);
     try {
-      execFileSync(
-        'wrangler',
-        ['d1', 'execute', d1Name, remote ? '--remote' : '--local', '--yes', '--file', f],
-        { cwd: resolve('apps/web'), stdio: 'inherit' },
-      );
+      for (let attempt = 1; ; attempt++) {
+        try {
+          execFileSync(
+            'wrangler',
+            ['d1', 'execute', d1Name, remote ? '--remote' : '--local', '--yes', '--file', f],
+            { cwd: resolve('apps/web'), stdio: 'inherit' },
+          );
+          return;
+        } catch (error) {
+          if (attempt >= 3) throw error;
+          console.error(`ship: ${name} failed (attempt ${attempt}/3); retrying`);
+          sleepSync(30_000 * attempt);
+        }
+      }
     } finally {
       rmSync(f, { force: true });
     }
   };
 
   if (emit) mkdirSync(emit, { recursive: true });
-  // Children-first wipe. Emit as 0_wipe.sql so a manual apply runs it before the parent-first inserts. Stamp a
-  // loud header: the emitted file bypassed the live authorization guard (it names no DB), so whoever applies it
-  // by hand owns the target check that assertD1TargetAuthorized would otherwise enforce (todorkolev #226).
-  const EMIT_WIPE_HEADER =
-    '-- ⚠ DESTRUCTIVE, UNGUARDED: this wipe was emitted with --emit and did NOT pass the live D1\n' +
-    '-- target-authorization check (SIGMA_SHIP_ENV allowlist + name↔SIGMA_D1_ID). If you apply it by hand,\n' +
-    '-- YOU are responsible for confirming the target D1 is the intended one before running it.\n';
   // One read of a source table: null when the table is absent from the work DB.
   const readTable = (table) => {
-    const cols = sqliteJson(`PRAGMA table_info(${sqlIdent(table)})`).map((r) => r.name);
-    if (!cols.length) return null;
+    const info = sqliteJson(`PRAGMA table_info(${sqlIdent(table)})`);
+    const columns = info.map((r) => r.name);
+    if (!columns.length) return null;
     const rows = sqliteJson(`SELECT * FROM ${sqlIdent(table)}`);
-    return { rowCount: rows.length, statements: insertStatements(table, cols, rows) };
+    return { rowCount: rows.length, statements: insertStatements(table, columns, rows) };
   };
+  // Staged tables copy the schema the target serves; an emitted script can only follow the work DB.
+  const readSchema = (tables) =>
+    schemaFromRows(
+      emit
+        ? sqliteJson(schemaQuery(tables))
+        : (parseWranglerJson(
+            execFileSync(
+              'wrangler',
+              [
+                'd1',
+                'execute',
+                d1Name,
+                remote ? '--remote' : '--local',
+                '--json',
+                '--command',
+                schemaQuery(tables),
+              ],
+              { cwd: resolve('apps/web'), encoding: 'utf8' },
+            ),
+          )[0]?.results ?? []),
+      tables,
+    );
 
   let summary = {};
   try {
-    if (emit) {
-      // --emit keeps ONE file per table: those are applied by hand, and numbered fragments would only add
-      // ordering rope to a manual run. Nothing is written to a DB, so there is nothing to pace or verify —
-      // the header on 0_wipe.sql puts the target check on whoever applies them.
-      writeFileSync(resolve(emit, '0_wipe.sql'), EMIT_WIPE_HEADER + wipeSql());
-      for (const table of TABLES) {
-        const read = readTable(table);
-        if (!read) {
-          summary[table] = 'absent (skipped)';
-          continue;
-        }
-        summary[table] = read.rowCount;
-        writeFileSync(resolve(emit, `${table}.sql`), read.statements.join(''));
-      }
-    } else {
-      summary = runShip({
-        tables: TABLES,
-        readTable,
-        wipeSql: wipeSql(),
-        apply: applyFile,
-        sleep: sleepSync,
-        readCounts: (expected) => readShippedCounts(d1Name, remote, expected),
-        maxStatements,
-        paceMs,
-      });
-    }
+    let sequence = 0;
+    summary = runShip({
+      tables: withRegistry ? [...REGISTRY_TABLES, ...TABLES] : TABLES,
+      wipeTables: withRegistry ? [...REGISTRY_TABLES.slice().reverse(), ...WIPE_ORDER] : WIPE_ORDER,
+      readTable,
+      readSchema,
+      apply: emit
+        ? (name, sql) =>
+            writeFileSync(
+              resolve(emit, `${String(sequence++).padStart(5, '0')}_${name}.sql`),
+              '-- Apply files in filename order. Target authorization is the responsibility of the caller.\n' +
+                sql,
+            )
+        : applyFile,
+      sleep: emit ? () => {} : sleepSync,
+      // The swap re-checks the staged counts in its own batch; live runs also read them back first.
+      readCounts: emit
+        ? (expected) => expected
+        : (expected) => readShippedCounts(d1Name, remote, expected),
+      maxStatements,
+      paceMs,
+      yielding: () => yieldRequested,
+      runId: emit ? null : (process.env.SIGMA_RUN_ID ?? null),
+      published: emit ? null : readPublishedGeneration(d1Name, remote),
+    });
+  } catch (error) {
+    if (!(error instanceof ShipYield)) throw error;
+    console.log(`ship: ${error.message}`);
+    process.exitCode = 75;
+    return;
   } finally {
+    sourceDb.close();
     if (tmp) rmSync(tmp, { recursive: true, force: true });
   }
 
@@ -560,4 +818,10 @@ function main() {
 // Only run when invoked directly (importing for tests has no side effects). pathToFileURL — not a raw
 // `file://` template — so a repo path with spaces or non-ASCII (which import.meta.url percent-encodes)
 // still matches and the CLI runs.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  for (const signal of ['SIGTERM', 'SIGINT'])
+    process.on(signal, () => {
+      yieldRequested = true;
+    });
+  await main();
+}
