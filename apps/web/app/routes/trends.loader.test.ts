@@ -106,4 +106,31 @@ describe('loader (trends.tsx / overview)', () => {
       expect.objectContaining({ year: null }),
     );
   });
+
+  it('forwards a well-formed ?year to the list query but leaves the trend corpus-wide', async () => {
+    q.getSpendingTrend.mockResolvedValue({ points: [] });
+    q.getCpvGroupStats.mockResolvedValue({ groups: [] });
+    q.listOverviewContracts.mockResolvedValue([]);
+    q.getCpvGroupMedians.mockResolvedValue([]);
+
+    const res = await call('?year=2024');
+
+    expect(res.year).toBe('2024');
+    expect(q.listOverviewContracts).toHaveBeenCalledWith(
+      DB,
+      expect.objectContaining({ year: '2024' }),
+    );
+    expect(q.getSpendingTrend.mock.calls[0]![1]).not.toHaveProperty('year');
+  });
+
+  it('also backfills a baseline for a selected CPV group that is outside the top-N stats', async () => {
+    q.getSpendingTrend.mockResolvedValue({ points: [] });
+    q.getCpvGroupStats.mockResolvedValue({ groups: [{ group: '45000' }] });
+    q.listOverviewContracts.mockResolvedValue([]);
+    q.getCpvGroupMedians.mockResolvedValue([]);
+
+    await call('?cpv=45000&cpv=33600');
+
+    expect(q.getCpvGroupMedians).toHaveBeenCalledWith(DB, ['33600']);
+  });
 });

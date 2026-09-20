@@ -435,6 +435,43 @@ describe('getCpvGroupStats', () => {
   });
 });
 
+describe('getCpvGroupStats — sparse corpora', () => {
+  it('drops a ranked group whose distribution scan came back empty and reports 0 groups when the count row is missing', async () => {
+    const db = overviewDb({
+      all(sql, args) {
+        if (sql.includes('GROUP BY grp')) {
+          return [
+            { grp: '33600', contracts: 2 },
+            { grp: '45000', contracts: 1 },
+          ];
+        }
+        // The 45000 distribution scan returns nothing (contracts vanished between the two statements).
+        return args[0] === '33600' ? [{ v: 700, name: 'Стока', rn: 1, cnt: 2 }] : [];
+      },
+      first: () => null,
+    });
+    const { groups, totalGroups } = await getCpvGroupStats(db, 2);
+    expect(groups.map((g) => g.group)).toEqual(['33600']);
+    expect(totalGroups).toBe(0);
+  });
+
+  it('falls back to the smallest sampled value when the exact percentile rank is absent', async () => {
+    // cnt=101 asks for ranks 11/51/91, none of which the (sparse) ladder carries.
+    const db = overviewDb({
+      all(sql) {
+        if (sql.includes('GROUP BY grp')) return [{ grp: '33600', contracts: 101 }];
+        return [
+          { v: 250, name: 'Стока', rn: 1, cnt: 101 },
+          { v: 900, name: 'Стока', rn: 101, cnt: 101 },
+        ];
+      },
+      first: () => ({ n: 1 }),
+    });
+    const { groups } = await getCpvGroupStats(db, 1);
+    expect(groups[0]).toMatchObject({ p10Eur: 250, medianEur: 250, p90Eur: 250, maxEur: 900 });
+  });
+});
+
 describe('getCpvGroupMedians', () => {
   it('returns the lower median per group, dedupes and drops malformed groups', async () => {
     const calls: QueryCall[] = [];
@@ -460,6 +497,11 @@ describe('getCpvGroupMedians', () => {
 
   it('is a no-op for an empty group list', async () => {
     expect(await getCpvGroupMedians(overviewDb({}), [])).toEqual([]);
+  });
+
+  it('omits a group with no contracts instead of inventing a median', async () => {
+    const db = overviewDb({ first: () => null });
+    expect(await getCpvGroupMedians(db, ['22112'])).toEqual([]);
   });
 
   it('caps concurrent D1 queries at MAX_CPV_GROUPS for an oversized group list', async () => {

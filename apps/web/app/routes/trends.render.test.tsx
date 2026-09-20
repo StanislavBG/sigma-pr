@@ -164,4 +164,98 @@ describe('/trends route — render', () => {
     await renderTrends(loaderData({ angle: 'time', step: 'y', cur: true }));
     expect(text()).toContain('вкл. текущата година');
   });
+
+  it('labels the current-period toggle in months at the monthly step', async () => {
+    await renderTrends(loaderData({ angle: 'time', step: 'm' }));
+    expect(text()).toContain('вкл. текущия месец');
+  });
+
+  it('names an unnamed CPV group by its code and marks the selected row in the compact panel', async () => {
+    const groups = [
+      { ...CPV_GROUP, group: '45000', name: null },
+      { ...CPV_GROUP, group: '33000', name: 'Медицина' },
+    ];
+    await renderTrends(
+      loaderData({
+        angle: 'cross',
+        cpvSel: ['45000'],
+        stats: { groups, totalGroups: 2 },
+      }),
+    );
+    const rows = [...container.querySelectorAll('.ov-cpv-row')];
+    const selected = rows.find((r) => r.textContent?.includes('45000'))!;
+    const other = rows.find((r) => r.textContent?.includes('33000'))!;
+    expect(selected.textContent).toContain('CPV група 45000');
+    expect(selected.querySelector('.ov-check')?.textContent).toBe('✓');
+    expect(other.querySelector('.ov-check')?.textContent).toBe('');
+  });
+
+  it('gives every selected group its own chip that removes just that group', async () => {
+    await renderTrends(loaderData({ cpvSel: ['33000', '45000'] }));
+    const chips = [...container.querySelectorAll('.ov-chip')];
+    expect(chips).toHaveLength(2);
+    const remove = (label: string) =>
+      decodeURIComponent(
+        chips.find((c) => c.textContent?.includes(label))!.getAttribute('href') ?? '',
+      );
+    expect(remove('33000')).toContain('cpv=45000');
+    expect(remove('33000')).not.toContain('cpv=33000');
+  });
+
+  it('says so when a cpv selection leaves too little data for the cross-lens chart, and names the groups otherwise', async () => {
+    const one = { period: '2022-Q1', valueEur: 1, contracts: 1, partial: false };
+    const base = baseLoaderData().trend;
+    await renderTrends(
+      loaderData({ angle: 'cross', cpvSel: ['45000'], trend: { ...base, points: [one] } }),
+    );
+    expect(container.querySelector('.ov-cross-chart-empty')?.textContent).toContain(
+      'Няма достатъчно данни',
+    );
+
+    await renderTrends(loaderData({ angle: 'cross', cpvSel: ['45000'] }));
+    expect(container.querySelector('.ov-cross-chart-empty')).toBeNull();
+    expect(
+      container.querySelector('.combo-chart [aria-label]')?.getAttribute('aria-label'),
+    ).toContain('45000');
+  });
+
+  it('highlights the active year card in the cross lens', async () => {
+    await renderTrends(loaderData({ angle: 'cross', year: '2022' }));
+    expect(container.querySelector('.ov-year.is-slim')!.className).toContain('is-active');
+  });
+
+  it('flags a still-filling year on the time lens', async () => {
+    const base = baseLoaderData().trend;
+    await renderTrends(
+      loaderData({
+        trend: {
+          ...base,
+          years: [{ year: '2022', valueEur: 1, contracts: 1, yoyPct: null, partial: true }],
+        },
+      }),
+    );
+    expect(container.querySelector('.ov-year-partial')?.textContent).toContain('частично');
+  });
+
+  it('labels each card against its group median, and leaves a card without a known cohort unlabeled', async () => {
+    await renderTrends(
+      loaderData({
+        contracts: [
+          { ...CONTRACT, id: 'hi', valueEur: 2_000_000 }, // 10× the 200 000 median
+          { ...CONTRACT, id: 'none', cpvGroup: null },
+          { ...CONTRACT, id: 'unknown', cpvGroup: '99999' },
+          { ...CONTRACT, id: 'backfilled', cpvGroup: '33000', valueEur: 1_000 },
+        ],
+        medians: [{ group: '33000', name: 'Медицина', contracts: 3, medianEur: 100_000 }],
+      }),
+    );
+    const cards = [...container.querySelectorAll('.ov-card')];
+    const rel = (i: number) => cards[i]!.querySelector('.ov-card-rel')?.textContent ?? null;
+    expect(rel(0)).toBe('×10 типичното');
+    expect(rel(1)).toBeNull();
+    expect(rel(2)).toBeNull();
+    expect(rel(3)).toBe('под типичното');
+    expect(cards[3]!.querySelector('.ov-card-cohort')?.textContent).toBe('Медицина');
+    expect(cards[2]!.querySelector('.ov-card-cohort')?.textContent).toBe('');
+  });
 });

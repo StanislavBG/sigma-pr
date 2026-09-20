@@ -298,7 +298,7 @@ const CPV_BUCKET_SERVICES: ReadonlySet<string> = new Set([
   '98',
 ]);
 
-const CPV_DIVISION_SET: ReadonlySet<string> = new Set(CPV_SECTORS.map((s) => s.code));
+export const CPV_DIVISION_SET: ReadonlySet<string> = new Set(CPV_SECTORS.map((s) => s.code));
 
 /** Classify a CPV division/full code into its works/goods/services bucket. Unknown, missing or
  *  unassigned codes fall to `other` (never silently coerced into a real bucket). Deterministic. */

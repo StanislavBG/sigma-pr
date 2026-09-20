@@ -181,4 +181,181 @@ describe('/overruns route — render', () => {
     expect(text()).toContain('Няма раздути договори');
     expect(container.querySelector('.ov-row')).toBeNull();
   });
+
+  describe('inspector „Детайли по договора" grid', () => {
+    const fieldOf = (key: string) =>
+      [...container.querySelectorAll('.ov-insp-grid-row')]
+        .find((r) => r.querySelector('.ov-insp-grid-key')?.textContent === key)
+        ?.querySelector('.ov-insp-grid-val')?.textContent;
+
+    it('joins the EU programme to the financing label, or says just „Европейско" without one', async () => {
+      await renderOverruns(loaderData({ rows: [row({ euFunded: true, euProgramme: 'ОПРР' })] }));
+      expect(fieldOf('Финансиране')).toBe('Европейско · ОПРР');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ rows: [row({ euFunded: true, euProgramme: null })] }));
+      expect(fieldOf('Финансиране')).toBe('Европейско');
+    });
+
+    it('labels national funding and never fabricates a source when the flag is unknown', async () => {
+      await renderOverruns(loaderData({ rows: [row({ euFunded: false })] }));
+      expect(fieldOf('Финансиране')).toBe('Национално');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ rows: [row({ euFunded: null })] }));
+      expect(fieldOf('Финансиране')).toBe('—');
+    });
+
+    it('shows the CPV code with its description, the bare code, or a dash', async () => {
+      await renderOverruns(loaderData({ rows: [row()] }));
+      expect(fieldOf('CPV код')).toBe('45233110 — Строеж на магистрали');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ rows: [row({ cpvDescription: null })] }));
+      expect(fieldOf('CPV код')).toBe('45233110');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ rows: [row({ cpvCode: null, cpvDescription: null })] }));
+      expect(fieldOf('CPV код')).toBe('—');
+    });
+
+    it('prefers the real end date for the term, else the duration in days, else omits the row', async () => {
+      await renderOverruns(loaderData({ rows: [row({ endDate: '2024-12-31' })] }));
+      expect(fieldOf('Срок')).toContain('2024');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ rows: [row({ endDate: null, durationDays: 540 })] }));
+      expect(fieldOf('Срок')).toBe('540 дни');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ rows: [row({ endDate: null, durationDays: null })] }));
+      expect(fieldOf('Срок')).toBeUndefined();
+    });
+
+    it('marks missing identifiers honestly: no ЕИК for the buyer, unconfirmed for the bidder, no procedure', async () => {
+      await renderOverruns(
+        loaderData({
+          rows: [row({ authorityEik: '', bidderEik: '', procedureType: null })],
+        }),
+      );
+      expect(fieldOf('Възложител · ЕИК')).toBe('Община Х · —');
+      expect(fieldOf('Изпълнител · ЕИК')).toBe('Фирма ООД · непотвърден');
+      expect(fieldOf('Процедура')).toBe('—');
+    });
+
+    it('omits the status badge when the contract has no usable end date', async () => {
+      await renderOverruns(loaderData({ rows: [row({ endDate: null })] }));
+      expect(container.querySelector('.ov-status-badge')).toBeNull();
+    });
+  });
+
+  describe('annex history', () => {
+    const withAnnexes = (annexes: unknown[]) => {
+      const data = loaderData({ rows: [row()] });
+      (data.annexesByContract as Record<string, unknown[]>).c1 = annexes;
+      return data;
+    };
+
+    it('signs an increase, leaves a reduction with its own minus, and dashes an unknown delta', async () => {
+      await renderOverruns(
+        withAnnexes([
+          { seq: 1, date: '2020-06-01', reason: 'обем', deltaEur: 200_000 },
+          { seq: 2, date: '2020-07-01', reason: null, deltaEur: -100 },
+          { seq: 3, date: null, reason: null, deltaEur: null },
+        ]),
+      );
+      const deltas = [...container.querySelectorAll('.ov-annex-delta')].map((d) => d.textContent);
+      expect(deltas[0]).toMatch(/^\+/);
+      expect(deltas[1]).not.toMatch(/^\+/);
+      expect(deltas[1]).not.toContain('+');
+      expect(deltas[2]).toBe('—');
+      // Only the annex that carries a reason renders one.
+      expect(container.querySelectorAll('.ov-annex-reason').length).toBe(1);
+    });
+
+    it('says the breakdown is unavailable when the contract has no annex rows', async () => {
+      await renderOverruns(withAnnexes([]));
+      expect(container.querySelector('.ov-annex-empty')).not.toBeNull();
+      expect(container.querySelector('.ov-annex-list')).toBeNull();
+    });
+  });
+
+  describe('scatter axis and sector/authority tables', () => {
+    it('writes growth beyond +1000% on the axis in thousands with a decimal comma', async () => {
+      await renderOverruns(
+        loaderData({
+          rows: [
+            row({ contractId: 'c0', contractSlug: 'c0-slug', pct: 0.25 }), // +25%
+            row({ contractId: 'c1', pct: 30 }), // +3000%
+            row({ contractId: 'c2', contractSlug: 'c2-slug', pct: 100 }), // +10 000%
+          ],
+        }),
+      );
+      const axis = container.querySelector('.ov-scatter-svg')!.textContent ?? '';
+      expect(axis).toMatch(/\+\d+(,\d)?к%/);
+      expect(axis).toMatch(/\+\d+%/);
+    });
+
+    it('accents only the single fastest-growing sector, and only when there is more than one', async () => {
+      const sector = (code: string, growth: number): OverrunSectorRow => ({
+        ...SECTOR_ROW,
+        code,
+        growth,
+      });
+      await renderOverruns(
+        loaderData({ bySector: [sector('45', 0.2), sector('72', 0.9), sector('33', 0.4)] }),
+      );
+      const top = [...container.querySelectorAll('.ov-sector-growth.is-top')];
+      expect(top).toHaveLength(1);
+      expect(top[0]!.closest('tr')!.querySelector('.ov-sector-code')!.textContent).toBe('72');
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(loaderData({ bySector: [sector('45', 0.2)] }));
+      expect(container.querySelector('.ov-sector-growth.is-top')).toBeNull();
+    });
+
+    it('adds the „other" bucket to the legend only when a sector falls in it, and dashes a blank code', async () => {
+      await renderOverruns(loaderData());
+      const legendCount = () => container.querySelectorAll('.ov-bucket-legend-item').length;
+      expect(legendCount()).toBe(3);
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderOverruns(
+        loaderData({ bySector: [{ ...SECTOR_ROW, code: '', label: 'Без код', bucket: 'other' }] }),
+      );
+      expect(legendCount()).toBe(4);
+      expect(container.querySelector('.ov-sector-code')!.textContent).toBe('—');
+    });
+
+    it('accents only the top institution row', async () => {
+      await renderOverruns(
+        loaderData({
+          byAuthority: [
+            AUTHORITY_ROW,
+            { ...AUTHORITY_ROW, authoritySlug: 'other', authorityName: 'Друга', growth: 0.1 },
+          ],
+        }),
+      );
+      const growth = [...container.querySelectorAll('.ov-auth-growth')];
+      expect(growth[0]!.className).toContain('is-top');
+      expect(growth[1]!.className).not.toContain('is-top');
+    });
+
+    it('omits the share-of-signing readout when nothing was signed', async () => {
+      const data = loaderData();
+      data.data.corpus.shareOfSigning = 0;
+      await renderOverruns(data);
+      const label = container
+        .querySelector('.ov-hk-l .metric-info-btn')!
+        .getAttribute('aria-label');
+      expect(label).not.toContain('от общо подписаната');
+    });
+
+    it('announces navigation state for assistive tech', async () => {
+      await renderOverruns(loaderData());
+      expect(container.querySelector('[role="status"]')!.textContent).toBe(
+        'Класацията е обновена.',
+      );
+    });
+  });
 });

@@ -60,6 +60,21 @@ describe('peakPoint / formatPeakMonth', () => {
     expect(formatPeakMonth('2024-01')).toBe('яну 2024');
     expect(formatPeakMonth(null)).toBe('—');
   });
+  it('passes an unparseable period through verbatim rather than inventing a month', () => {
+    expect(formatPeakMonth('2025')).toBe('2025');
+    expect(formatPeakMonth('2025-Q4')).toBe('2025-Q4');
+    expect(formatPeakMonth('')).toBe('—');
+  });
+  it('falls back to the raw month number when it is outside 01–12', () => {
+    expect(formatPeakMonth('2025-13')).toBe('13 2025');
+  });
+  it('keeps the first of two equal-valued periods as the peak', () => {
+    const tie: PeakablePoint[] = [
+      { period: '2025-03', valueEur: 500 },
+      { period: '2025-04', valueEur: 500 },
+    ];
+    expect(peakPoint(tie)?.period).toBe('2025-03');
+  });
 });
 
 describe('opaqueHeadline / formatPpChange', () => {
@@ -157,5 +172,35 @@ describe('estimateYoyGrowth', () => {
     // two ratios (~+14%, ~+15%) lands on the genuine sustainable ~+15%.
     expect(g.value).toBeGreaterThan(1.1);
     expect(g.value).toBeLessThan(1.25);
+  });
+
+  it('reports a neutral count factor when no year has a positive count to divide by', () => {
+    // Value grows +20%/yr but every month carries zero contracts → no valid count ratio exists.
+    const points = [...year(2021, 100, 0), ...year(2022, 120, 0), ...year(2023, 144, 0)];
+    const g = estimateYoyGrowth(points);
+    expect(g.value).toBeCloseTo(1.2, 5);
+    expect(g.count).toBe(1);
+  });
+
+  it('treats a collapse of the contract count to zero as noise (neutral 1), not as a −100% trend', () => {
+    const points = [...year(2021, 100, 50), ...year(2022, 120, 0)];
+    const g = estimateYoyGrowth(points);
+    expect(g.value).toBeCloseTo(1.2, 5);
+    expect(g.count).toBe(1);
+  });
+
+  it('does not stretch a two-year jump across a missing year into one YoY step', () => {
+    // 2021 → 2023 with 2022 absent would read as a single +44% "year"; the pair is skipped instead.
+    const g = estimateYoyGrowth([...year(2021, 100, 50), ...year(2023, 144, 72)]);
+    expect(g).toEqual({ value: 1, count: 1 });
+  });
+
+  it('still uses the consecutive pair when a gap precedes it', () => {
+    const g = estimateYoyGrowth([
+      ...year(2020, 10, 5),
+      ...year(2022, 100, 50),
+      ...year(2023, 120, 55),
+    ]);
+    expect(g.value).toBeCloseTo(1.2, 5); // only 2022 → 2023 is a real one-year step
   });
 });
