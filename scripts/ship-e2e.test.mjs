@@ -12,8 +12,18 @@
 // Run: node --test scripts/ship-e2e.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +31,7 @@ import {
   MAX_BATCH_ROWS,
   MAX_STATEMENTS_PER_REQUEST,
   PACE_MS,
+  READBACK_MAX_TABLES,
   TABLES,
 } from './ship-related-persons.mjs';
 
@@ -61,6 +72,13 @@ CREATE TABLE bidders(id TEXT PRIMARY KEY);
 CREATE TABLE authorities(id TEXT PRIMARY KEY);
 .read ${MIG}
 .read ${MIG_EVIDENCE}
+.read ${resolve(ROOT, 'packages/db/migrations/0012_person_redirects.sql')}
+.read ${resolve(ROOT, 'packages/db/migrations/0014_person_profile.sql')}
+.read ${resolve(ROOT, 'packages/db/migrations/0015_person_observations.sql')}
+.read ${resolve(ROOT, 'packages/db/migrations/0013_registry.sql')}
+.read ${resolve(ROOT, 'packages/db/migrations/0017_registry_identity_observations.sql')}
+.read ${resolve(ROOT, 'packages/db/migrations/0018_person_entities.sql')}
+.read ${resolve(ROOT, 'packages/db/migrations/0022_person_relatives.sql')}
 INSERT INTO bidders(id) VALUES('eik:1');
 INSERT INTO authorities(id) VALUES('auth:1');`;
 
@@ -116,7 +134,8 @@ function fakeWrangler(dir) {
   const target = join(dir, 'target.sqlite');
   // Seeded with STALE rows on purpose: against an empty target a wipe that deletes nothing is
   // indistinguishable from a correct one, and that mutation escaped the first cut of this test.
-  sqlite(target, SCHEMA + STALE);
+  // Only on the first fake in a directory: a test that ships twice keeps the same served target.
+  if (!existsSync(target)) sqlite(target, SCHEMA + STALE);
   const exe = join(bin, 'wrangler');
   writeFileSync(
     exe,
@@ -136,7 +155,7 @@ try {
     const skip = process.env.SHIP_FAKE_SKIP;
     if (!skip || !file.endsWith(skip)) run('.read ' + file);
   } else if (command) {
-    if (process.env.SHIP_FAKE_READFAIL) { process.stderr.write('read-back exploded'); process.exit(1); }
+    if (process.env.SHIP_FAKE_READFAIL && /COUNT\\(\\*\\)/.test(command)) { process.stderr.write('read-back exploded'); process.exit(1); }
     const rows = JSON.parse(run('.mode json\\n' + command) || '[]');
     const shaped = process.env.SHIP_FAKE_NULLN
       ? rows.map((r) => (r.t === process.env.SHIP_FAKE_NULLN ? { ...r, n: null } : r))
@@ -174,7 +193,7 @@ function runShip(
     env = {},
     links = LINKS_SMALL,
     forceChunks = true,
-    minLinks = 1,
+    audited = true,
     remote = false,
     yes = false,
     emit = null,
@@ -182,6 +201,13 @@ function runShip(
 ) {
   const work = join(dir, 'work.sqlite');
   sqlite(work, SCHEMA + corpus(links));
+  writeFileSync(
+    `${work}.audited.json`,
+    JSON.stringify({
+      complete: audited,
+      sha256: createHash('sha256').update(readFileSync(work)).digest('hex'),
+    }),
+  );
   const fake = fakeWrangler(dir);
   const res = spawnSync(
     process.execPath,
@@ -191,7 +217,6 @@ function runShip(
       ...(remote ? ['--remote'] : ['--local']),
       ...(yes ? ['--yes'] : []),
       ...(emit ? [`--emit=${emit}`] : []),
-      `--min-links=${minLinks}`,
       // The pacing delay is always zeroed to keep the suite quick — it is covered by the runShip unit
       // tests. Whether the REQUEST SIZE is overridden matters: the defaults-constraining test leaves
       // it alone on purpose.
@@ -233,7 +258,9 @@ test('a real ship run leaves the target holding exactly what the work DB held', 
   }
 
   const applies = calls.filter((c) => c.file);
-  assert.match(applies[0].file, /^0_wipe\./, 'the wipe must be the first request');
+  assert.equal(applies[0].file, 'clear_staging.sql');
+  assert.equal(applies[1].file, 'prepare_persons.sql');
+  assert.equal(applies.at(-1).file, 'publish.sql');
 
   // Chunking: a table past the batch budget must arrive as several CONTIGUOUSLY numbered requests.
   const nums = applies
@@ -247,19 +274,30 @@ test('a real ship run leaves the target holding exactly what the work DB held', 
   assert.equal(nums.length, EXPECTED_CHUNKS);
   assert.deepEqual(
     nums,
-    Array.from({ length: nums.length }, (_, i) => i + 1),
+    Array.from({ length: nums.length }, (_, i) => i),
   );
 
-  // The read-back must be the LAST thing the run does, and must count each table from that table.
-  const last = calls.at(-1);
-  assert.ok(last.argv.includes('--command'), 'the read-back must come after the inserts');
-  const sql = last.argv[last.argv.indexOf('--command') + 1];
+  // Both staged and promoted tables must be read back before cleanup.
+  const readback = calls
+    .filter((c) => c.argv.includes('--command'))
+    .map((c) => c.argv[c.argv.indexOf('--command') + 1]);
+  assert.ok(readback.length > 0, 'the upload must be verified');
+  const sql = readback.join('\n');
   for (const table of TABLES)
     assert.match(
       sql,
       new RegExp(`COUNT\\(\\*\\) AS n FROM "${table}"`),
       `${table} not really counted`,
     );
+  // …and no single query may cross the local engine's cap, which is the whole point of the split: one
+  // over-wide query comes back as an error object, and every table then reads as „no answer".
+  for (const q of readback) {
+    const terms = (q.match(/COUNT\(\*\) AS n FROM/g) ?? []).length;
+    assert.ok(
+      terms <= READBACK_MAX_TABLES,
+      `a read-back query counted ${terms} tables — over the ${READBACK_MAX_TABLES}-table cap`,
+    );
+  }
 });
 
 test('a request that never landed fails the run', (t) => {
@@ -271,10 +309,16 @@ test('a request that never landed fails the run', (t) => {
   // as the orphaned seals land, before the read-back ever runs. That is a stronger guard, but it would
   // leave the read-back gate itself unexercised, which is what this test is for. A seal chunk has no
   // dependents, so its loss is invisible until the counts are compared.
-  const { res } = runShip(dir, { env: { SHIP_FAKE_SKIP: 'interest_link_evidence.2.sql' } });
+  const { res, fake } = runShip(dir, { env: { SHIP_FAKE_SKIP: 'interest_link_evidence.2.sql' } });
   assert.notEqual(res.status, 0, 'a short target must fail the run');
   assert.match(res.stderr, /ship verification FAILED/);
   assert.match(res.stderr, /interest_link_evidence: shipped \d+, target has \d+/);
+  assert.equal(fake.count('persons'), 1);
+  assert.equal(
+    Number(sqlite(fake.target, "SELECT COUNT(*) FROM persons WHERE id='stale';")),
+    1,
+    'failed upload preserves the accepted surface',
+  );
 });
 
 test('a read-back that answers with a non-number fails closed', (t) => {
@@ -282,7 +326,7 @@ test('a read-back that answers with a non-number fails closed', (t) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
   // `Number(null)` is 0, which would read as "the table is empty" and quietly pass.
-  const { res } = runShip(dir, { env: { SHIP_FAKE_NULLN: 'interest_link_authorities' } });
+  const { res } = runShip(dir, { env: { SHIP_FAKE_NULLN: 'rp_next_interest_link_authorities' } });
   assert.notEqual(res.status, 0, 'an unanswered count must fail the run');
   assert.match(res.stderr, /ship verification FAILED/);
 });
@@ -317,11 +361,11 @@ const noWrites = (fake) => {
   }
 };
 
-test('an under-floor corpus refuses to wipe, before any request', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'ship-e2e-floor-'));
+test('an unaudited corpus refuses before any request', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ship-e2e-proof-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
-  const { res, fake } = runShip(dir, { minLinks: LINKS_SMALL + 1 });
+  const { res, fake } = runShip(dir, { audited: false });
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /refusing to ship/i);
   assert.ok(noWrites(fake), 'the refusal must come before the wipe');
@@ -359,21 +403,68 @@ test('a read-back that cannot answer at all fails the run', (t) => {
   assert.match(res.stderr, /no answer/);
 });
 
-test('--emit writes a guarded wipe plus one file per table, and touches no database', (t) => {
+test('--emit writes ordered staging and swap SQL without touching a database', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'ship-e2e-emit-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-
   const out = join(dir, 'emitted');
   const { res, fake } = runShip(dir, { emit: out });
   assert.equal(res.status, 0, `emit failed:\n${res.stderr}`);
   assert.ok(noWrites(fake), '--emit must not touch a database');
-
-  const wipe = readFileSync(join(out, '0_wipe.sql'), 'utf8');
-  assert.match(wipe, /DESTRUCTIVE, UNGUARDED/, 'the emitted wipe must carry its warning header');
-  for (const table of TABLES) assert.match(wipe, new RegExp(`DELETE FROM "${table}"`));
+  const files = readdirSync(out).sort();
+  const sql = files.map((f) => readFileSync(join(out, f), 'utf8')).join('\n');
+  assert.match(files[0], /clear_staging/);
+  assert.match(files[1], /prepare_persons/);
   for (const table of TABLES) {
-    const body = readFileSync(join(out, `${table}.sql`), 'utf8');
-    if (table === 'interest_link_authorities') assert.equal(body, '', 'empty table, empty file');
-    else assert.match(body, new RegExp(`INSERT INTO "${table}"`));
+    assert.match(sql, new RegExp(`ALTER TABLE "${table}" RENAME TO "rp_prev_${table}"`));
+    assert.match(sql, new RegExp(`ALTER TABLE "rp_next_${table}" RENAME TO "${table}"`));
   }
+  // The artifact is also executable in its documented filename order.
+  sqlite(fake.target, 'PRAGMA foreign_keys=ON;\n' + sql);
+  for (const table of TABLES)
+    assert.equal(
+      fake.count(table),
+      table === 'interest_links' || table === 'interest_link_evidence'
+        ? LINKS_SMALL
+        : (EXPECTED_ROWS[table] ?? 0),
+      table,
+    );
+});
+
+test('a published generation is recognised, so a restarted container does not ship it twice', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ship-e2e-receipt-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = { SIGMA_RUN_ID: '00000000-0000-4000-8000-00000000abcd' };
+  // The fake target lives in `dir` and must survive all three ships; the work DB is rebuilt each time.
+  const ship = (env) => {
+    rmSync(join(dir, 'work.sqlite'), { force: true });
+    rmSync(join(dir, 'calls.jsonl'), { force: true }); // each ship's own requests, nothing carried over
+    return runShip(dir, { env });
+  };
+
+  const first = ship(run);
+  assert.equal(first.res.status, 0, `ship failed:\n${first.res.stderr}`);
+  assert.equal(
+    sqlite(first.fake.target, 'SELECT run_id FROM rp_generation;').toString().trim(),
+    run.SIGMA_RUN_ID,
+  );
+
+  // Same run, same target: nothing is sent and the served surface is untouched.
+  const again = ship(run);
+  assert.equal(again.res.status, 0, `second ship failed:\n${again.res.stderr}`);
+  assert.equal(
+    again.fake.calls().filter((c) => c.file).length,
+    0,
+    'a published generation must not be shipped again',
+  );
+  assert.match(again.res.stdout, /already published/);
+
+  // A different run ships normally, and the receipt moves to it.
+  const next = ship({ SIGMA_RUN_ID: '00000000-0000-4000-8000-00000000dcba' });
+  assert.equal(next.res.status, 0, `third ship failed:\n${next.res.stderr}`);
+  assert.ok(next.fake.calls().filter((c) => c.file).length > 0);
+  assert.equal(
+    Number(sqlite(next.fake.target, 'SELECT count(*) FROM rp_generation;')),
+    1,
+    'exactly one generation is on record',
+  );
 });

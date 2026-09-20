@@ -4,10 +4,12 @@
 export const CANONICAL_QUERY_PARAMS = new Set([
   'angle', // /trends: time | cpv | cross lens
   'authority',
+  'basis', // evidence basis in the unified person contract list
   'bidder',
   'bids', // single-bid filter — changes the result set + totals
   'by', // /overruns — sort dimension (absolute | percent)
   'center',
+  'company', // person profile company filter
   'count',
   'cpv', // /trends: repeatable CPV group multi-select faceting the обзор chart + list, validated
   // 5-digit by cpvGroupSelection (filters.ts). /contracts does not read this param yet — no reader
@@ -18,17 +20,21 @@ export const CANONICAL_QUERY_PARAMS = new Set([
   'eu',
   'funding',
   'g',
+  'institution', // /conflicts — the official's institution
   'kind',
   'p',
   'page', // keyed unconditionally — harmless over-key when there's no cursor
   'procedure',
   'q',
   'sector',
+  'signal', // /conflicts — own institution / in the declared window
   'sort',
   'step', // /trends: series granularity (m|q|y; replaced the old `g` param)
+  'stake', // /conflicts — own stake vs a relative's
   'top', // top-20 vs top-50 on /flows, /competition
   'type',
   'value',
+  'view', // /persons — the profile instead of the list of matching people
   'year',
 ]);
 
