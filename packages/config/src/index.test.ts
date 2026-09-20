@@ -78,6 +78,19 @@ describe('cpvBucket', () => {
     expect(cpvBucket('99')).toBe('other');
   });
 
+  it('sends a catalogued division that no bucket claims to other instead of coercing it into goods', () => {
+    // A future division added to the catalogue but omitted from all three bucket sets must not be
+    // absorbed into a real bucket. Simulate that by adding one to the live catalogue for this case.
+    const catalogue = CPV_DIVISION_SET as Set<string>;
+    catalogue.add('97');
+    try {
+      expect(cpvBucket('97')).toBe('other');
+    } finally {
+      catalogue.delete('97');
+    }
+    expect(cpvBucket('97')).toBe('other'); // and, uncatalogued again, it still falls back
+  });
+
   it('assigns every catalogued division to exactly one real bucket (a partition)', () => {
     for (const sector of CPV_SECTORS) {
       expect(['works', 'goods', 'services']).toContain(cpvBucket(sector.code));
