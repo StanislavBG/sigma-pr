@@ -13,7 +13,7 @@
 | #171 | `pr/overruns` | няма | 0 | зелен (4 pass, 1 skipping) | **да** — след #170 |
 | #172 | `pr/analyze` | няма | 0 | зелен (4 pass, 1 skipping) | **да** — след #171 |
 | #193 | `docs/methodology-dashboards` | няма | 0 | зелен (4 pass, 1 skipping) | **да** — след #172 (описва таблата) |
-| #188 | `feat/contract-health-index` | няма | 0 (6 → 0 в този кръг) | зелен (виж бележката) | **да**, технически — след spine-а |
+| #188 | `feat/contract-health-index` | няма | 0 (6 → 0 в този кръг) | зелен на `09f08c22` (4 pass, 1 skipping) | **да**, технически — след spine-а (GitHub: `BLOCKED` = чака одобрение) |
 | #338 | `chore/gh-review-reply-helper` | няма | 0 | зелен (4 pass, 1 skipping) | **да** — независим |
 | #269 | `fix/search-ranking-exact-vs-blob-25` | няма | 0 | зелен (4 pass, 1 skipping) | **да** — независим |
 | #141 | `feat/map-info-card` | няма | 0 | зелен (4 pass, 1 skipping) | **да** — независим, но виж „Поредност" (`pages.css`) |
